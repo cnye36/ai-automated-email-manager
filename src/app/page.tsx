@@ -1,65 +1,133 @@
-import Image from "next/image";
+import { db } from '@/lib/db/client'
+import { contacts, sentEmails, inboxes } from '@/lib/db/schema'
+import { count, gte, isNotNull, sql } from 'drizzle-orm'
+import { getInboxConfigs } from '@/lib/config'
+import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
+import SendTrigger from '@/components/SendTrigger'
 
-export default function Home() {
+async function getStats() {
+  const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+  const [totalContacts] = await db.select({ count: count() }).from(contacts)
+  const [sentToday] = await db.select({ count: count() }).from(sentEmails).where(gte(sentEmails.sentAt, todayStart))
+  const [totalSent] = await db.select({ count: count() }).from(sentEmails)
+  const [totalOpened] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.openedAt))
+  const [totalReplied] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.repliedAt))
+  const statusRows = await db.select({ status: contacts.status, count: count() }).from(contacts).groupBy(contacts.status).all()
+
+  return {
+    totalContacts: totalContacts.count,
+    sentToday: sentToday.count,
+    totalSent: totalSent.count,
+    totalOpened: totalOpened.count,
+    totalReplied: totalReplied.count,
+    openRate: totalSent.count > 0 ? ((totalOpened.count / totalSent.count) * 100).toFixed(1) : '0.0',
+    replyRate: totalSent.count > 0 ? ((totalReplied.count / totalSent.count) * 100).toFixed(1) : '0.0',
+    statusRows,
+  }
+}
+
+async function getInboxSummary() {
+  const configs = getInboxConfigs()
+  const rows = await db.select().from(inboxes).all()
+  const rowMap = new Map(rows.map((r) => [r.id, r]))
+
+  return configs.map((c) => {
+    const row = rowMap.get(c.id)
+    return {
+      id: c.id,
+      address: c.address,
+      active: c.active,
+      warmupDay: getWarmupDay(c.warmupStartDate),
+      dailyLimit: getDailyLimit(c.warmupStartDate),
+      sentToday: row?.sentToday ?? 0,
+      totalSent: row?.totalSent ?? 0,
+    }
+  })
+}
+
+function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+      <p className="text-xs text-gray-500 uppercase tracking-wider">{label}</p>
+      <p className="text-3xl font-bold text-white mt-1">{value}</p>
+      {sub && <p className="text-sm text-gray-400 mt-1">{sub}</p>}
+    </div>
+  )
+}
+
+export default async function Dashboard() {
+  const [stats, inboxSummary] = await Promise.all([getStats(), getInboxSummary()])
+
+  const totalBudgetToday = inboxSummary.filter((i) => i.active).reduce((s, i) => s + i.dailyLimit, 0)
+
+  return (
+    <div className="p-8 max-w-6xl">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+          <p className="text-gray-400 text-sm mt-1">
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <SendTrigger />
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <StatCard label="Total Contacts" value={stats.totalContacts.toLocaleString()} />
+        <StatCard label="Sent Today" value={stats.sentToday} sub={`of ${totalBudgetToday} budget`} />
+        <StatCard label="Open Rate" value={`${stats.openRate}%`} sub={`${stats.totalOpened} opens`} />
+        <StatCard label="Reply Rate" value={`${stats.replyRate}%`} sub={`${stats.totalReplied} replies`} />
+      </div>
+
+      <div className="bg-gray-900 border border-gray-800 rounded-lg mb-8">
+        <div className="px-5 py-4 border-b border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-300">Inbox Warmup Status</h2>
         </div>
-      </main>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 uppercase">
+                <th className="text-left px-5 py-3">Inbox</th>
+                <th className="text-left px-5 py-3">Day</th>
+                <th className="text-left px-5 py-3">Daily Limit</th>
+                <th className="text-left px-5 py-3">Sent Today</th>
+                <th className="text-left px-5 py-3">Total Sent</th>
+                <th className="text-left px-5 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {inboxSummary.map((inbox) => (
+                <tr key={inbox.id} className="hover:bg-gray-800/50">
+                  <td className="px-5 py-3 font-mono text-xs text-indigo-300">{inbox.address}</td>
+                  <td className="px-5 py-3 text-gray-300">Day {inbox.warmupDay}</td>
+                  <td className="px-5 py-3 text-gray-300">{inbox.dailyLimit}/day</td>
+                  <td className="px-5 py-3 text-gray-300">{inbox.sentToday}</td>
+                  <td className="px-5 py-3 text-gray-300">{inbox.totalSent}</td>
+                  <td className="px-5 py-3">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${inbox.active ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-400'}`}>
+                      {inbox.active ? 'Active' : 'Paused'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="bg-gray-900 border border-gray-800 rounded-lg">
+        <div className="px-5 py-4 border-b border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-300">Contact Status Breakdown</h2>
+        </div>
+        <div className="px-5 py-4 flex flex-wrap gap-4">
+          {stats.statusRows.map((row) => (
+            <div key={row.status} className="flex items-center gap-2">
+              <span className="text-gray-400 text-sm capitalize">{row.status}:</span>
+              <span className="text-white font-semibold text-sm">{row.count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
-  );
+  )
 }

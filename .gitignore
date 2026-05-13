@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Project-specific
+data/
+config/inboxes.json
+.env.local
+campaigns/
+
