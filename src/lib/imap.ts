@@ -1,13 +1,19 @@
 import { ImapFlow } from 'imapflow'
 import { db } from './db/client'
-import { sentEmails, contacts } from './db/schema'
-import { eq, isNull, inArray } from 'drizzle-orm'
+import { sentEmails, contacts, replyEvents } from './db/schema'
+import { and, eq } from 'drizzle-orm'
 import { getActiveInboxConfigs } from './config'
+import { sendNotificationEmail } from './mailer'
 
 interface ReplyMatch {
   contactId: number
   sentEmailId: number
+  campaignId: number | null
   repliedAt: number
+  providerMessageId: string | null
+  fromAddress: string | null
+  fromName: string | null
+  subject: string | null
 }
 
 export async function checkRepliesForInbox(inboxId: string): Promise<ReplyMatch[]> {
@@ -38,7 +44,6 @@ export async function checkRepliesForInbox(inboxId: string): Promise<ReplyMatch[
         .select()
         .from(sentEmails)
         .where(eq(sentEmails.inboxId, inboxId))
-        .all()
 
       const messageIdMap = new Map(
         pendingSent
@@ -58,6 +63,8 @@ export async function checkRepliesForInbox(inboxId: string): Promise<ReplyMatch[
         const rawHeaders = msg.headers?.toString() || ''
         const inReplyTo = rawHeaders.match(/^in-reply-to:\s*(.+)$/im)?.[1]?.trim() || ''
         const references = rawHeaders.match(/^references:\s*(.+)$/im)?.[1]?.trim() || ''
+        const from = msg.envelope?.from?.[0]
+        const providerMessageId = msg.envelope?.messageId || null
 
         // Check if any sent messageId is referenced
         for (const [msgId, sentEmail] of messageIdMap) {
@@ -70,7 +77,12 @@ export async function checkRepliesForInbox(inboxId: string): Promise<ReplyMatch[
               matches.push({
                 contactId: sentEmail.contactId,
                 sentEmailId: sentEmail.id,
+                campaignId: sentEmail.campaignId,
                 repliedAt: Math.floor(Date.now() / 1000),
+                providerMessageId,
+                fromAddress: from?.address || null,
+                fromName: from?.name || null,
+                subject: msg.envelope?.subject || null,
               })
             }
           }
@@ -87,18 +99,56 @@ export async function checkRepliesForInbox(inboxId: string): Promise<ReplyMatch[
   return matches
 }
 
-export async function checkAllReplies(): Promise<{ inbox: string; replies: number }[]> {
+export async function checkAllReplies(): Promise<{ inbox: string; replies: number; newReplies: number }[]> {
   const configs = getActiveInboxConfigs()
   const results = []
 
   for (const config of configs) {
     const matches = await checkRepliesForInbox(config.id)
+    let newReplies = 0
 
     if (matches.length > 0) {
       const now = Math.floor(Date.now() / 1000)
 
       // Mark sent_emails as replied
       for (const match of matches) {
+        const alreadyStored = match.providerMessageId
+          ? await db
+              .select({ id: replyEvents.id })
+              .from(replyEvents)
+              .where(and(
+                eq(replyEvents.inboxId, config.id),
+                eq(replyEvents.providerMessageId, match.providerMessageId)
+              ))
+              .limit(1)
+          : []
+
+        if (alreadyStored.length === 0) {
+          await db.insert(replyEvents).values({
+            contactId: match.contactId,
+            sentEmailId: match.sentEmailId,
+            campaignId: match.campaignId,
+            inboxId: config.id,
+            providerMessageId: match.providerMessageId,
+            fromAddress: match.fromAddress,
+            fromName: match.fromName,
+            subject: match.subject,
+            receivedAt: match.repliedAt,
+          }).onConflictDoNothing()
+          newReplies++
+
+          await sendNotificationEmail(
+            `New campaign reply from ${match.fromAddress || 'unknown sender'}`,
+            [
+              `Inbox: ${config.address}`,
+              `From: ${match.fromName ? `${match.fromName} <${match.fromAddress || ''}>` : match.fromAddress || '-'}`,
+              `Subject: ${match.subject || '-'}`,
+              '',
+              'Open the Replies page in the app to disposition this lead.',
+            ].join('\n')
+          )
+        }
+
         await db
           .update(sentEmails)
           .set({ repliedAt: match.repliedAt })
@@ -112,7 +162,7 @@ export async function checkAllReplies(): Promise<{ inbox: string; replies: numbe
       }
     }
 
-    results.push({ inbox: config.id, replies: matches.length })
+    results.push({ inbox: config.id, replies: matches.length, newReplies })
   }
 
   return results

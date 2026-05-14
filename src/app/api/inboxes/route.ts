@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db/client'
 import { inboxes } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import { getInboxConfigs } from '@/lib/config'
 import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   const configs = getInboxConfigs()
-  const rows = await db.select().from(inboxes).all()
+  const rows = await db.select().from(inboxes)
   const rowMap = new Map(rows.map((r) => [r.id, r]))
 
   const result = configs.map((config) => {
@@ -15,7 +16,7 @@ export async function GET() {
     return {
       id: config.id,
       address: config.address,
-      active: config.active,
+      active: row?.active ?? config.active,
       warmupStartDate: config.warmupStartDate,
       warmupDay: getWarmupDay(config.warmupStartDate),
       dailyLimit: getDailyLimit(config.warmupStartDate),
@@ -30,7 +31,22 @@ export async function GET() {
 export async function PATCH(req: NextRequest) {
   const { id, active } = await req.json()
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+  if (typeof active !== 'boolean') return NextResponse.json({ error: 'Missing active boolean' }, { status: 400 })
 
-  await db.update(inboxes).set({ active }).where(eq(inboxes.id, id))
+  const config = getInboxConfigs().find((inbox) => inbox.id === id)
+  if (!config) return NextResponse.json({ error: 'Unknown inbox id' }, { status: 404 })
+
+  await db
+    .insert(inboxes)
+    .values({
+      id: config.id,
+      address: config.address,
+      warmupStartDate: config.warmupStartDate,
+      active,
+    })
+    .onConflictDoUpdate({
+      target: inboxes.id,
+      set: { active },
+    })
   return NextResponse.json({ ok: true })
 }

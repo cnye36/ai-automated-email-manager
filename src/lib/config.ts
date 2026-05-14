@@ -18,6 +18,12 @@ let _cache: InboxConfig[] | null = null
 
 export function getInboxConfigs(): InboxConfig[] {
   if (_cache) return _cache
+
+  if (process.env.INBOXES_JSON) {
+    _cache = JSON.parse(process.env.INBOXES_JSON) as InboxConfig[]
+    return _cache
+  }
+
   const configPath = process.env.INBOXES_CONFIG_PATH
     ? path.resolve(process.env.INBOXES_CONFIG_PATH)
     : path.join(process.cwd(), 'config', 'inboxes.json')

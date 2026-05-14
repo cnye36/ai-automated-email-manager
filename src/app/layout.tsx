@@ -1,9 +1,6 @@
 import type { Metadata } from 'next'
-import { Geist } from 'next/font/google'
 import Link from 'next/link'
 import './globals.css'
-
-const geist = Geist({ subsets: ['latin'], variable: '--font-geist' })
 
 export const metadata: Metadata = {
   title: 'Email Sender — ai-automatedhq',
@@ -14,12 +11,13 @@ const NAV = [
   { href: '/', label: 'Dashboard' },
   { href: '/campaigns', label: 'Campaigns' },
   { href: '/contacts', label: 'Contacts' },
+  { href: '/replies', label: 'Replies' },
   { href: '/inboxes', label: 'Inboxes' },
 ]
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geist.variable} h-full`}>
+    <html lang="en" className="h-full">
       <body className="h-full flex bg-gray-950 text-gray-100">
         <aside className="w-56 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col">
           <div className="px-5 py-4 border-b border-gray-800">

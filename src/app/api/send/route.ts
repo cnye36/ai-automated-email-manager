@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { buildAndRunSendQueue } from '@/lib/scheduler'
 
+export const dynamic = 'force-dynamic'
+
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-internal-secret')
   if (secret !== process.env.INTERNAL_API_SECRET) {

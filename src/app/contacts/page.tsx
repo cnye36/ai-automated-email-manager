@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 interface Contact {
   id: number
@@ -12,17 +12,31 @@ interface Contact {
   sequenceStep: number | null
   assignedInboxId: string | null
   nextSendDate: number | null
+  notes: string | null
   industry: string | null
   city: string | null
   state: string | null
 }
 
-const STATUSES = ['all', 'pending', 'active', 'replied', 'bounced', 'unsubscribed', 'complete', 'error']
+const STATUSES = ['all', 'pending', 'active', 'replied', 'interested', 'not_interested', 'do_not_contact', 'bounced', 'unsubscribed', 'complete', 'error']
+const DISPOSITIONS = [
+  { value: 'active', label: 'Active' },
+  { value: 'replied', label: 'Replied' },
+  { value: 'interested', label: 'Interested' },
+  { value: 'not_interested', label: 'Not Interested' },
+  { value: 'do_not_contact', label: 'Do Not Contact' },
+  { value: 'unsubscribed', label: 'Unsubscribed' },
+  { value: 'bounced', label: 'Bounced' },
+  { value: 'complete', label: 'Complete' },
+]
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-gray-700 text-gray-300',
   active: 'bg-blue-900 text-blue-300',
   replied: 'bg-green-900 text-green-300',
+  interested: 'bg-emerald-900 text-emerald-300',
+  not_interested: 'bg-yellow-900 text-yellow-200',
+  do_not_contact: 'bg-red-950 text-red-300',
   bounced: 'bg-red-900 text-red-300',
   unsubscribed: 'bg-orange-900 text-orange-300',
   complete: 'bg-purple-900 text-purple-300',
@@ -35,22 +49,45 @@ export default function ContactsPage() {
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('all')
   const [loading, setLoading] = useState(true)
+  const [updating, setUpdating] = useState<number | null>(null)
   const limit = 50
 
-  async function load(p = page, s = status) {
+  const load = useCallback(async (p: number, s = status) => {
     setLoading(true)
     const res = await fetch(`/api/contacts?page=${p}&limit=${limit}&status=${s}`)
     const data = await res.json()
     setContacts(data.contacts)
     setTotal(data.total)
     setLoading(false)
-  }
+  }, [status])
 
-  useEffect(() => { load(1, status) }, [status])
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load(1, status)
+  }, [load, status])
 
   function changeStatus(s: string) {
     setStatus(s)
     setPage(1)
+  }
+
+  async function updateContactStatus(contact: Contact, newStatus: string) {
+    setUpdating(contact.id)
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: contact.id, status: newStatus, notes: contact.notes || '' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        window.alert(data.error || 'Failed to update contact')
+        return
+      }
+      await load(page, status)
+    } finally {
+      setUpdating(null)
+    }
   }
 
   const totalPages = Math.ceil(total / limit)
@@ -94,6 +131,7 @@ export default function ContactsPage() {
                   <th className="text-left px-4 py-3">Step</th>
                   <th className="text-left px-4 py-3">Inbox</th>
                   <th className="text-left px-4 py-3">Next Send</th>
+                  <th className="text-left px-4 py-3">Disposition</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
@@ -123,6 +161,19 @@ export default function ContactsPage() {
                       {c.nextSendDate
                         ? new Date(c.nextSendDate * 1000).toLocaleDateString()
                         : '—'}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <select
+                        value={c.status || 'pending'}
+                        onChange={(event) => updateContactStatus(c, event.target.value)}
+                        disabled={updating === c.id}
+                        className="w-36 rounded-md bg-gray-950 border border-gray-700 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-indigo-500 disabled:opacity-50"
+                      >
+                        {c.status === 'pending' && <option value="pending">Pending</option>}
+                        {DISPOSITIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
                     </td>
                   </tr>
                 ))}

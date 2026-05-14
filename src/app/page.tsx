@@ -1,9 +1,12 @@
 import { db } from '@/lib/db/client'
 import { contacts, sentEmails, inboxes } from '@/lib/db/schema'
-import { count, gte, isNotNull, sql } from 'drizzle-orm'
+import { count, gte, isNotNull } from 'drizzle-orm'
 import { getInboxConfigs } from '@/lib/config'
 import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
+import { getSendWindowSummary } from '@/lib/scheduler'
 import SendTrigger from '@/components/SendTrigger'
+
+export const dynamic = 'force-dynamic'
 
 async function getStats() {
   const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
@@ -12,7 +15,7 @@ async function getStats() {
   const [totalSent] = await db.select({ count: count() }).from(sentEmails)
   const [totalOpened] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.openedAt))
   const [totalReplied] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.repliedAt))
-  const statusRows = await db.select({ status: contacts.status, count: count() }).from(contacts).groupBy(contacts.status).all()
+  const statusRows = await db.select({ status: contacts.status, count: count() }).from(contacts).groupBy(contacts.status)
 
   return {
     totalContacts: totalContacts.count,
@@ -28,7 +31,7 @@ async function getStats() {
 
 async function getInboxSummary() {
   const configs = getInboxConfigs()
-  const rows = await db.select().from(inboxes).all()
+  const rows = await db.select().from(inboxes)
   const rowMap = new Map(rows.map((r) => [r.id, r]))
 
   return configs.map((c) => {
@@ -36,7 +39,7 @@ async function getInboxSummary() {
     return {
       id: c.id,
       address: c.address,
-      active: c.active,
+      active: row?.active ?? c.active,
       warmupDay: getWarmupDay(c.warmupStartDate),
       dailyLimit: getDailyLimit(c.warmupStartDate),
       sentToday: row?.sentToday ?? 0,
@@ -57,6 +60,7 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 
 export default async function Dashboard() {
   const [stats, inboxSummary] = await Promise.all([getStats(), getInboxSummary()])
+  const sendWindow = getSendWindowSummary()
 
   const totalBudgetToday = inboxSummary.filter((i) => i.active).reduce((s, i) => s + i.dailyLimit, 0)
 
@@ -67,6 +71,9 @@ export default async function Dashboard() {
           <h1 className="text-2xl font-bold text-white">Dashboard</h1>
           <p className="text-gray-400 text-sm mt-1">
             {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+          </p>
+          <p className="text-gray-500 text-xs mt-1">
+            Sending window: {sendWindow.startHour}:00-{sendWindow.endHour}:00{sendWindow.weekdaysOnly ? ' · Mon-Fri only' : ''}
           </p>
         </div>
         <SendTrigger />

@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db/client'
 import { contacts, sentEmails, inboxes } from '@/lib/db/schema'
-import { count, eq, gte, isNotNull, sql } from 'drizzle-orm'
+import { count, gte, isNotNull } from 'drizzle-orm'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
@@ -13,14 +15,13 @@ export async function GET() {
       db.select({ count: count() }).from(sentEmails),
       db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.openedAt)),
       db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.repliedAt)),
-      db.select().from(inboxes).all(),
+      db.select().from(inboxes),
     ])
 
   const statusCounts = await db
     .select({ status: contacts.status, count: count() })
     .from(contacts)
     .groupBy(contacts.status)
-    .all()
 
   return NextResponse.json({
     totalContacts: totalContacts.count,

@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { runSendQueueAction } from '@/app/actions'
 
 export default function SendTrigger() {
   const [loading, setLoading] = useState(false)
@@ -9,19 +10,14 @@ export default function SendTrigger() {
     setLoading(true)
     setResult(null)
     try {
-      const res = await fetch('/api/send', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-secret': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
-        },
-        body: JSON.stringify({ dryRun }),
-      })
-      const data = await res.json()
-      if (data.error) {
+      const data = await runSendQueueAction(dryRun)
+      if (!data.ok) {
         setResult(`Error: ${data.error}`)
       } else {
-        setResult(`Sent: ${data.sent} | Failed: ${data.failed} | Skipped: ${data.skipped}`)
+        const result = data.result
+        setResult(result.blockedReason
+          ? result.blockedReason
+          : `Sent: ${result.sent} | Failed: ${result.failed} | Skipped: ${result.skipped}`)
       }
     } catch (e) {
       setResult(`Error: ${e}`)

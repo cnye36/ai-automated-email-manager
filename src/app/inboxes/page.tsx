@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 interface InboxStatus {
   id: string
@@ -17,13 +17,16 @@ export default function InboxesPage() {
   const [loading, setLoading] = useState(true)
   const [toggling, setToggling] = useState<string | null>(null)
 
-  async function load() {
+  const load = useCallback(async () => {
     const res = await fetch('/api/inboxes')
     setInboxes(await res.json())
     setLoading(false)
-  }
+  }, [])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load()
+  }, [load])
 
   async function toggleInbox(id: string, current: boolean) {
     setToggling(id)

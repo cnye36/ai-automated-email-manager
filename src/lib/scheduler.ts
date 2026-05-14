@@ -1,23 +1,81 @@
 import { db } from './db/client'
 import { contacts, sentEmails, inboxes } from './db/schema'
-import { eq, lte, and, inArray, isNull, sql } from 'drizzle-orm'
+import { eq, lte, and, sql } from 'drizzle-orm'
 import { sendEmail, randomDelay } from './mailer'
+import { ensureEmailBodyHtmlForSend } from './email-body'
 import { getDailyLimit } from './warmup'
-import { getActiveInboxConfigs } from './config'
+import { getInboxConfigs } from './config'
+import type { InboxConfig } from './config'
 import { v4 as uuidv4 } from 'uuid'
 import { format } from 'date-fns'
 
 const SEQUENCE_DELAY_DAYS = 3 // days between sequence steps
+const SEND_WINDOW_START_HOUR = Number(process.env.SEND_WINDOW_START_HOUR ?? 8)
+const SEND_WINDOW_END_HOUR = Number(process.env.SEND_WINDOW_END_HOUR ?? 18)
+const SEND_WEEKDAYS_ONLY = process.env.SEND_WEEKDAYS_ONLY !== 'false'
 
 export interface SendRunResult {
   sent: number
   failed: number
   skipped: number
+  blockedReason?: string
   details: Array<{ contactId: number; inboxId: string; step: number; success: boolean; error?: string }>
 }
 
 function todayStr(): string {
   return format(new Date(), 'yyyy-MM-dd')
+}
+
+function isAllowedSendTime(date: Date): boolean {
+  const day = date.getDay()
+  const hour = date.getHours()
+  const isWeekend = day === 0 || day === 6
+
+  if (SEND_WEEKDAYS_ONLY && isWeekend) return false
+  return hour >= SEND_WINDOW_START_HOUR && hour < SEND_WINDOW_END_HOUR
+}
+
+function nextAllowedSendAt(date: Date): number {
+  const candidate = new Date(date)
+
+  if (isAllowedSendTime(candidate)) {
+    return Math.floor(candidate.getTime() / 1000)
+  }
+
+  candidate.setMinutes(Math.floor(Math.random() * 45), Math.floor(Math.random() * 60), 0)
+
+  while (true) {
+    const day = candidate.getDay()
+    const isWeekend = day === 0 || day === 6
+    const hour = candidate.getHours()
+
+    if (SEND_WEEKDAYS_ONLY && isWeekend) {
+      candidate.setDate(candidate.getDate() + (day === 6 ? 2 : 1))
+      candidate.setHours(SEND_WINDOW_START_HOUR, Math.floor(Math.random() * 45), 0, 0)
+      continue
+    }
+
+    if (hour < SEND_WINDOW_START_HOUR) {
+      candidate.setHours(SEND_WINDOW_START_HOUR, Math.floor(Math.random() * 45), 0, 0)
+      continue
+    }
+
+    if (hour >= SEND_WINDOW_END_HOUR) {
+      candidate.setDate(candidate.getDate() + 1)
+      candidate.setHours(SEND_WINDOW_START_HOUR, Math.floor(Math.random() * 45), 0, 0)
+      continue
+    }
+
+    return Math.floor(candidate.getTime() / 1000)
+  }
+}
+
+export function getSendWindowSummary() {
+  return {
+    startHour: SEND_WINDOW_START_HOUR,
+    endHour: SEND_WINDOW_END_HOUR,
+    weekdaysOnly: SEND_WEEKDAYS_ONLY,
+  }
 }
 
 async function resetDailyCountsIfNeeded() {
@@ -29,7 +87,7 @@ async function resetDailyCountsIfNeeded() {
 }
 
 async function syncInboxesFromConfig() {
-  const configs = getActiveInboxConfigs()
+  const configs = getInboxConfigs()
   for (const config of configs) {
     await db
       .insert(inboxes)
@@ -43,20 +101,33 @@ async function syncInboxesFromConfig() {
         target: inboxes.id,
         set: {
           address: config.address,
-          active: config.active,
         },
       })
   }
+}
+
+async function getActiveInboxRuntimeConfigs(): Promise<InboxConfig[]> {
+  const configs = getInboxConfigs()
+  const rows = await db.select().from(inboxes)
+  const rowMap = new Map(rows.map((row) => [row.id, row]))
+
+  return configs.filter((config) => rowMap.get(config.id)?.active ?? config.active)
 }
 
 export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResult> {
   await syncInboxesFromConfig()
   await resetDailyCountsIfNeeded()
 
-  const configs = getActiveInboxConfigs()
+  const configs = await getActiveInboxRuntimeConfigs()
   const result: SendRunResult = { sent: 0, failed: 0, skipped: 0, details: [] }
-  const now = Math.floor(Date.now() / 1000)
+  const nowDate = new Date()
+  const now = Math.floor(nowDate.getTime() / 1000)
   const today = todayStr()
+
+  if (!isAllowedSendTime(nowDate)) {
+    result.blockedReason = `Outside send window (${SEND_WINDOW_START_HOUR}:00-${SEND_WINDOW_END_HOUR}:00${SEND_WEEKDAYS_ONLY ? ', Monday-Friday' : ''})`
+    return result
+  }
 
   // Build per-inbox budget
   const budgets = new Map<string, number>()
@@ -81,7 +152,6 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     .from(contacts)
     .where(eq(contacts.status, 'pending'))
     .limit(totalBudget)
-    .all()
 
   // Round-robin assign
   const inboxQueue = [...inboxIds]
@@ -91,7 +161,7 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     inboxQueue.push(inboxQueue.shift()!) // rotate
     await db
       .update(contacts)
-      .set({ status: 'active', assignedInboxId: inboxId, nextSendDate: now, updatedAt: now })
+      .set({ status: 'active', assignedInboxId: inboxId, nextSendDate: nextAllowedSendAt(nowDate), updatedAt: now })
       .where(eq(contacts.id, contact.id))
   }
 
@@ -100,7 +170,6 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     .select()
     .from(contacts)
     .where(and(eq(contacts.status, 'active'), lte(contacts.nextSendDate, now)))
-    .all()
 
   // Group by assigned inbox
   const byInbox = new Map<string, typeof due>()
@@ -110,35 +179,58 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     byInbox.get(id)!.push(contact)
   }
 
-  // 3. Send
-  for (const [inboxId, contactList] of byInbox) {
+  // Per-inbox capped lists, then merge in round-robin order (A1, B1, C1, A2, …)
+  // so one inbox does not exhaust its budget in a tight burst before others send.
+  const perInboxQueues = new Map<string, typeof due>()
+  for (const inboxId of inboxIds) {
+    const contactList = byInbox.get(inboxId) ?? []
     const budget = budgets.get(inboxId) || 0
-    const toSend = contactList.slice(0, budget)
+    const slice = contactList.slice(0, budget)
+    if (slice.length > 0) {
+      perInboxQueues.set(inboxId, [...slice])
+    }
+  }
 
-    for (const contact of toSend) {
-      const step = (contact.sequenceStep ?? 0) + 1
+  const sendQueue: Array<{ inboxId: string; contact: (typeof due)[0] }> = []
+  while (true) {
+    let progressed = false
+    for (const inboxId of inboxIds) {
+      const q = perInboxQueues.get(inboxId)
+      if (!q?.length) continue
+      sendQueue.push({ inboxId, contact: q.shift()! })
+      progressed = true
+    }
+    if (!progressed) break
+  }
 
-      let subject: string | null = null
-      let body: string | null = null
+  // 3. Send (interleaved across inboxes; delay between each step in the merged queue)
+  for (let i = 0; i < sendQueue.length; i++) {
+    const { inboxId, contact } = sendQueue[i]!
+    const step = (contact.sequenceStep ?? 0) + 1
 
-      if (step === 1) { subject = contact.email1Subject; body = contact.email1Body }
-      else if (step === 2) { subject = contact.email2Subject; body = contact.email2Body }
-      else if (step === 3) { subject = contact.email3Subject; body = contact.email3Body }
+    let subject: string | null = null
+    let body: string | null = null
 
-      if (!subject || !body || !contact.primaryEmail) {
-        result.skipped++
-        continue
-      }
+    if (step === 1) { subject = contact.email1Subject; body = contact.email1Body }
+    else if (step === 2) { subject = contact.email2Subject; body = contact.email2Body }
+    else if (step === 3) { subject = contact.email3Subject; body = contact.email3Body }
 
+    if (!subject || !body || !contact.primaryEmail) {
+      result.skipped++
+    } else {
       const trackingPixelId = uuidv4()
-      const nextDelay = step < 3 ? SEQUENCE_DELAY_DAYS * 24 * 60 * 60 : null
+      const nextSendDate = step < 3
+        ? nextAllowedSendAt(new Date((Math.floor(Date.now() / 1000) + SEQUENCE_DELAY_DAYS * 24 * 60 * 60) * 1000))
+        : null
 
       if (!dryRun) {
+        const htmlBody = await ensureEmailBodyHtmlForSend(body)
+
         const sendResult = await sendEmail({
           inboxId,
           to: contact.primaryEmail,
           subject,
-          html: body,
+          html: htmlBody,
           trackingPixelId,
         })
 
@@ -167,7 +259,7 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
           .set({
             sequenceStep: step,
             status: newStatus,
-            nextSendDate: nextDelay ? sentNow + nextDelay : null,
+            nextSendDate,
             updatedAt: sentNow,
           })
           .where(eq(contacts.id, contact.id))
@@ -194,14 +286,14 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
           success: sendResult.success,
           error: sendResult.error,
         })
-
-        if (toSend.indexOf(contact) < toSend.length - 1) {
-          await randomDelay()
-        }
       } else {
         result.sent++
         result.details.push({ contactId: contact.id, inboxId, step, success: true })
       }
+    }
+
+    if (!dryRun && i < sendQueue.length - 1) {
+      await randomDelay()
     }
   }
 

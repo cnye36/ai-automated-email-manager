@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer'
-import { getInboxConfig } from './config'
+import { getActiveInboxConfigs, getInboxConfig } from './config'
 
 export interface SendEmailOptions {
   inboxId: string
@@ -17,7 +17,8 @@ export interface SendResult {
 }
 
 const TRACKING_BASE_URL = process.env.TRACKING_BASE_URL || 'https://track.ai-automatedhq.com'
-const REPLY_TO = process.env.REPLY_TO_EMAIL || 'cnye36@gmail.com'
+const REPLY_TO = process.env.REPLY_TO_EMAIL || null
+const NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL || process.env.REPLY_NOTIFICATION_EMAIL || null
 
 function buildHtml(html: string, trackingPixelId?: string): string {
   const pixel = trackingPixelId
@@ -53,7 +54,47 @@ export async function sendEmail(opts: SendEmailOptions): Promise<SendResult> {
       to: opts.to,
       subject: opts.subject,
       html: buildHtml(opts.html, opts.trackingPixelId),
-      replyTo: opts.replyTo || REPLY_TO,
+      replyTo: opts.replyTo || REPLY_TO || config.address,
+      headers: {
+        'X-Mailer': 'ai-automatedhq-sender',
+      },
+    })
+
+    return { success: true, messageId: info.messageId }
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
+}
+
+export async function sendNotificationEmail(subject: string, text: string): Promise<SendResult> {
+  if (!NOTIFICATION_EMAIL) return { success: true }
+
+  const config = getInboxConfig(process.env.NOTIFICATION_INBOX_ID || '')
+    || getInboxConfig(process.env.DEFAULT_NOTIFICATION_INBOX_ID || '')
+    || getActiveInboxConfigs()[0]
+
+  if (!config) {
+    return { success: false, error: 'No notification inbox configured' }
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: false,
+    auth: {
+      user: config.username,
+      pass: config.password,
+    },
+    tls: { rejectUnauthorized: false },
+  })
+
+  try {
+    const info = await transporter.sendMail({
+      from: config.address,
+      to: NOTIFICATION_EMAIL,
+      subject,
+      text,
+      replyTo: config.address,
       headers: {
         'X-Mailer': 'ai-automatedhq-sender',
       },
