@@ -87,6 +87,36 @@ export async function GET() {
   return NextResponse.json(enriched)
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json()
+    const campaignId = Number(body.campaignId)
+    const active = body.active
+
+    if (!Number.isInteger(campaignId) || campaignId <= 0) {
+      return NextResponse.json({ error: 'Invalid campaignId' }, { status: 400 })
+    }
+    if (typeof active !== 'boolean') {
+      return NextResponse.json({ error: 'active must be a boolean' }, { status: 400 })
+    }
+
+    const [updated] = await db
+      .update(campaigns)
+      .set({ active })
+      .where(eq(campaigns.id, campaignId))
+      .returning()
+
+    if (!updated) {
+      return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
+    }
+
+    return NextResponse.json(updated)
+  } catch (err) {
+    console.error('Update campaign error:', err)
+    return NextResponse.json({ error: String(err) }, { status: 500 })
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)

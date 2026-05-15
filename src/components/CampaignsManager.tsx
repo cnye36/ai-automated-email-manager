@@ -44,6 +44,7 @@ export default function CampaignsManager({
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [deleting, setDeleting] = useState<number | 'all' | null>(null)
+  const [toggling, setToggling] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [preview, setPreview] = useState<CampaignRow | null>(null)
 
@@ -103,6 +104,27 @@ export default function CampaignsManager({
       }
     } finally {
       setUploading(false)
+    }
+  }
+
+  async function setCampaignActive(campaign: CampaignRow, active: boolean) {
+    setToggling(campaign.id)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/campaigns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: campaign.id, active }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setMessage(`Update failed: ${data.error || res.statusText}`)
+      } else {
+        setMessage(active ? `Resumed "${campaign.name}".` : `Paused "${campaign.name}".`)
+        await load()
+      }
+    } finally {
+      setToggling(null)
     }
   }
 
@@ -236,15 +258,16 @@ export default function CampaignsManager({
               <th className="text-left px-5 py-3">Email Content</th>
               <th className="text-left px-5 py-3">Sent</th>
               <th className="text-left px-5 py-3">Status</th>
+              <th className="text-left px-5 py-3">Sending</th>
               <th className="text-right px-5 py-3">Preview</th>
               <th className="text-right px-5 py-3">Delete</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
             {loading ? (
-              <tr><td className="px-5 py-4 text-gray-500" colSpan={9}>Loading...</td></tr>
+              <tr><td className="px-5 py-4 text-gray-500" colSpan={10}>Loading...</td></tr>
             ) : campaigns.length === 0 ? (
-              <tr><td className="px-5 py-4 text-gray-500" colSpan={9}>No campaigns imported yet.</td></tr>
+              <tr><td className="px-5 py-4 text-gray-500" colSpan={10}>No campaigns imported yet.</td></tr>
             ) : campaigns.map((campaign) => (
               <tr key={campaign.id} className="hover:bg-gray-800/40">
                 <td className="px-5 py-3 text-gray-100 font-medium">{campaign.name}</td>
@@ -256,6 +279,17 @@ export default function CampaignsManager({
                 <td className="px-5 py-3 text-gray-300 whitespace-nowrap">{coverageLabel(campaign)}</td>
                 <td className="px-5 py-3 text-gray-300">{campaign.sentEmails}</td>
                 <td className="px-5 py-3 text-gray-500">{statusText(campaign.statusBreakdown)}</td>
+                <td className="px-5 py-3">
+                  {campaign.active !== false ? (
+                    <span className="inline-flex items-center rounded-full bg-emerald-950 px-2.5 py-0.5 text-xs font-medium text-emerald-300 border border-emerald-800">
+                      Active
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-amber-950 px-2.5 py-0.5 text-xs font-medium text-amber-200 border border-amber-800">
+                      Paused
+                    </span>
+                  )}
+                </td>
                 <td className="px-5 py-3 text-right">
                   <button
                     onClick={() => setPreview(campaign)}
@@ -265,10 +299,21 @@ export default function CampaignsManager({
                     View
                   </button>
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-right space-x-2 whitespace-nowrap">
+                  <button
+                    onClick={() => setCampaignActive(campaign, campaign.active === false)}
+                    disabled={toggling !== null || deleting !== null || uploading}
+                    className="rounded-md bg-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {toggling === campaign.id
+                      ? 'Saving...'
+                      : campaign.active === false
+                        ? 'Resume'
+                        : 'Pause'}
+                  </button>
                   <button
                     onClick={() => deleteCampaign(campaign)}
-                    disabled={deleting !== null || uploading}
+                    disabled={deleting !== null || uploading || toggling !== null}
                     className="rounded-md bg-red-950 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {deleting === campaign.id ? 'Deleting...' : 'Delete'}

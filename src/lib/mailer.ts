@@ -19,6 +19,11 @@ export interface SendResult {
 const TRACKING_BASE_URL = process.env.TRACKING_BASE_URL || 'https://track.ai-automatedhq.com'
 const REPLY_TO = process.env.REPLY_TO_EMAIL || null
 const NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL || process.env.REPLY_NOTIFICATION_EMAIL || null
+const SENDER_DISPLAY_NAME = process.env.SENDER_DISPLAY_NAME?.trim() || 'Curtis from AI-Automated'
+
+function formatFromAddress(address: string) {
+  return { name: SENDER_DISPLAY_NAME, address }
+}
 
 function buildHtml(html: string, trackingPixelId?: string): string {
   const pixel = trackingPixelId
@@ -50,7 +55,7 @@ export async function sendEmail(opts: SendEmailOptions): Promise<SendResult> {
 
   try {
     const info = await transporter.sendMail({
-      from: config.address,
+      from: formatFromAddress(config.address),
       to: opts.to,
       subject: opts.subject,
       html: buildHtml(opts.html, opts.trackingPixelId),
@@ -90,7 +95,7 @@ export async function sendNotificationEmail(subject: string, text: string): Prom
 
   try {
     const info = await transporter.sendMail({
-      from: config.address,
+      from: formatFromAddress(config.address),
       to: NOTIFICATION_EMAIL,
       subject,
       text,

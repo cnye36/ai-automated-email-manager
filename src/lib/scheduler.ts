@@ -1,6 +1,6 @@
 import { db } from './db/client'
-import { contacts, sentEmails, inboxes } from './db/schema'
-import { eq, lte, and, sql } from 'drizzle-orm'
+import { campaigns, contacts, sentEmails, inboxes } from './db/schema'
+import { eq, lte, and, sql, inArray } from 'drizzle-orm'
 import { sendEmail, randomDelay } from './mailer'
 import { ensureEmailBodyHtmlForSend } from './email-body'
 import { getDailyLimit } from './warmup'
@@ -120,6 +120,14 @@ async function getActiveInboxRuntimeConfigs(): Promise<InboxConfig[]> {
   return configs.filter((config) => rowMap.get(config.id)?.active ?? config.active)
 }
 
+async function getActiveCampaignIds(): Promise<number[]> {
+  const rows = await db
+    .select({ id: campaigns.id })
+    .from(campaigns)
+    .where(eq(campaigns.active, true))
+  return rows.map((row) => row.id)
+}
+
 export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResult> {
   await syncInboxesFromConfig()
   await resetDailyCountsIfNeeded()
@@ -154,11 +162,15 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
 
   // 1. Activate pending contacts that haven't started yet (assign to inbox)
   const inboxIds = configs.map((c) => c.id)
-  const pendingContacts = await db
-    .select()
-    .from(contacts)
-    .where(eq(contacts.status, 'pending'))
-    .limit(totalBudget)
+  const activeCampaignIds = await getActiveCampaignIds()
+  const pendingContacts =
+    activeCampaignIds.length === 0
+      ? []
+      : await db
+          .select()
+          .from(contacts)
+          .where(and(eq(contacts.status, 'pending'), inArray(contacts.campaignId, activeCampaignIds)))
+          .limit(totalBudget)
 
   // Round-robin assign
   const inboxQueue = [...inboxIds]
@@ -172,11 +184,20 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
       .where(eq(contacts.id, contact.id))
   }
 
-  // 2. Get contacts due to send (active, nextSendDate <= now)
-  const due = await db
-    .select()
-    .from(contacts)
-    .where(and(eq(contacts.status, 'active'), lte(contacts.nextSendDate, now)))
+  // 2. Get contacts due to send (active, nextSendDate <= now, campaign not paused)
+  const due =
+    activeCampaignIds.length === 0
+      ? []
+      : await db
+          .select()
+          .from(contacts)
+          .where(
+            and(
+              eq(contacts.status, 'active'),
+              lte(contacts.nextSendDate, now),
+              inArray(contacts.campaignId, activeCampaignIds),
+            ),
+          )
 
   // Group by assigned inbox
   const byInbox = new Map<string, typeof due>()
