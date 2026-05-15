@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkAllReplies } from '@/lib/imap'
 import { buildAndRunSendQueue } from '@/lib/scheduler'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
+import { tryAcquireSendLock, releaseSendLock } from '@/lib/send-lock'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -21,7 +22,26 @@ async function run(req: NextRequest) {
 
   try {
     const replyResults = await checkAllReplies()
-    const sendResult = await buildAndRunSendQueue(false)
+
+    const acquired = await tryAcquireSendLock()
+    if (!acquired) {
+      return NextResponse.json({
+        ok: true,
+        skipped: 'send_already_running',
+        replies: {
+          results: replyResults,
+          totalReplies: replyResults.reduce((sum, row) => sum + row.replies, 0),
+          totalNewReplies: replyResults.reduce((sum, row) => sum + row.newReplies, 0),
+        },
+      })
+    }
+
+    let sendResult
+    try {
+      sendResult = await buildAndRunSendQueue(false)
+    } finally {
+      await releaseSendLock()
+    }
 
     return NextResponse.json({
       ok: true,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { formatCampaignPreviewBodies } from '@/lib/email-body'
 import { db } from '@/lib/db/client'
 import { campaigns, contacts, replyEvents, sentEmails } from '@/lib/db/schema'
+import { getRemainingContactCount, getSendingLabel, isCampaignLive } from '@/lib/campaign-status'
 import { and, count, desc, eq, sql } from 'drizzle-orm'
 
 export const dynamic = 'force-dynamic'
@@ -80,6 +81,9 @@ export async function GET() {
           ]),
         } : null,
         statusBreakdown: statusRows,
+        remainingContacts: getRemainingContactCount(statusRows),
+        isLive: isCampaignLive(campaign.active, statusRows),
+        sendingLabel: getSendingLabel(campaign.active, statusRows),
       }
     })
   )

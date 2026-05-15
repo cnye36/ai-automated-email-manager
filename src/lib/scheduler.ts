@@ -35,7 +35,7 @@ export interface SendRunResult {
   details: Array<{ contactId: number; inboxId: string; step: number; success: boolean; error?: string }>
 }
 
-function isAllowedSendTime(date: Date): boolean {
+export function isAllowedSendTime(date: Date): boolean {
   const { hour, dayOfWeek } = getZonedClock(date)
   const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
 

@@ -5,7 +5,8 @@ import { getInboxConfigs } from '@/lib/config'
 import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
 import { getSendWindowSummary } from '@/lib/scheduler'
 import { startOfTodayInSendTimezone } from '@/lib/send-timezone'
-import SendTrigger from '@/components/SendTrigger'
+import DashboardAutomationBanner from '@/components/DashboardAutomationBanner'
+import Link from 'next/link'
 
 export const dynamic = 'force-dynamic'
 
@@ -78,8 +79,15 @@ export default async function Dashboard() {
             {sendWindow.weekdaysOnly ? ' · Mon-Fri only' : ''}
           </p>
         </div>
-        <SendTrigger />
+        <Link
+          href="/campaigns#new-campaign"
+          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          New Campaign
+        </Link>
       </div>
+
+      <DashboardAutomationBanner />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard label="Total Contacts" value={stats.totalContacts.toLocaleString()} />

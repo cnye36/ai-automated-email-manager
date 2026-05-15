@@ -5,6 +5,7 @@ import { campaigns, contacts, sentEmails } from '@/lib/db/schema'
 import { and, count, desc, eq, sql } from 'drizzle-orm'
 import CampaignsManager, { type CampaignRow } from '@/components/CampaignsManager'
 import { formatCampaignPreviewBodies } from '@/lib/email-body'
+import { getRemainingContactCount, getSendingLabel, isCampaignLive } from '@/lib/campaign-status'
 
 export const dynamic = 'force-dynamic'
 
@@ -85,6 +86,9 @@ async function getCampaigns(): Promise<CampaignRow[]> {
           ]),
         } : null,
         statusBreakdown: statusRows,
+        remainingContacts: getRemainingContactCount(statusRows),
+        isLive: isCampaignLive(campaign.active, statusRows),
+        sendingLabel: getSendingLabel(campaign.active, statusRows),
       }
     })
   )

@@ -1,6 +1,7 @@
 'use client'
 
 import { FormEvent, useState } from 'react'
+import CampaignSendControls from '@/components/CampaignSendControls'
 
 export interface CampaignRow {
   id: number
@@ -9,6 +10,9 @@ export interface CampaignRow {
   importedAt: number | null
   totalContacts: number | null
   active: boolean | null
+  remainingContacts: number
+  isLive: boolean
+  sendingLabel: string
   sentEmails: number
   emailCoverage: Array<{ step: number; complete: number; subjectOnly: number; bodyOnly: number }>
   previewContact: {
@@ -193,7 +197,9 @@ export default function CampaignsManager({
         </button>
       </div>
 
-      <form onSubmit={uploadCampaign} className="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+      <CampaignSendControls />
+
+      <form id="new-campaign" onSubmit={uploadCampaign} className="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6 scroll-mt-8">
         <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
           <label className="block">
             <span className="block text-xs text-gray-500 uppercase tracking-wider mb-2">Campaign name</span>
@@ -280,13 +286,18 @@ export default function CampaignsManager({
                 <td className="px-5 py-3 text-gray-300">{campaign.sentEmails}</td>
                 <td className="px-5 py-3 text-gray-500">{statusText(campaign.statusBreakdown)}</td>
                 <td className="px-5 py-3">
-                  {campaign.active !== false ? (
-                    <span className="inline-flex items-center rounded-full bg-emerald-950 px-2.5 py-0.5 text-xs font-medium text-emerald-300 border border-emerald-800">
-                      Active
+                  {campaign.sendingLabel === 'Live' ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-950 px-2.5 py-0.5 text-xs font-medium text-emerald-300 border border-emerald-800">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Live
                     </span>
-                  ) : (
+                  ) : campaign.sendingLabel === 'Paused' ? (
                     <span className="inline-flex items-center rounded-full bg-amber-950 px-2.5 py-0.5 text-xs font-medium text-amber-200 border border-amber-800">
                       Paused
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-gray-800 px-2.5 py-0.5 text-xs font-medium text-gray-400 border border-gray-700">
+                      Complete
                     </span>
                   )}
                 </td>

@@ -10,6 +10,12 @@ export const campaigns = pgTable('campaigns', {
   active: boolean('active').default(true),
 })
 
+export const sendLocks = pgTable('send_locks', {
+  id: text('id').primaryKey(),
+  lockedAt: integer('locked_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+})
+
 export const inboxes = pgTable('inboxes', {
   id: text('id').primaryKey(),
   address: text('address').notNull(),
