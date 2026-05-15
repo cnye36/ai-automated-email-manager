@@ -20,12 +20,18 @@ const SEQUENCE_DELAY_DAYS = 3 // days between sequence steps
 const SEND_WINDOW_START_HOUR = Number(process.env.SEND_WINDOW_START_HOUR ?? 8)
 const SEND_WINDOW_END_HOUR = Number(process.env.SEND_WINDOW_END_HOUR ?? 18)
 const SEND_WEEKDAYS_ONLY = process.env.SEND_WEEKDAYS_ONLY !== 'false'
+/** Max emails per serverless invocation (avoids Vercel timeout). Cron runs hourly to finish the daily budget. */
+const MAX_SENDS_PER_RUN = Math.max(1, Number(process.env.MAX_SENDS_PER_RUN ?? 10))
 
 export interface SendRunResult {
   sent: number
   failed: number
   skipped: number
   blockedReason?: string
+  /** True when more sends were queued but deferred to the next run. */
+  truncated?: boolean
+  queuedThisRun?: number
+  maxSendsPerRun?: number
   details: Array<{ contactId: number; inboxId: string; step: number; success: boolean; error?: string }>
 }
 
@@ -232,8 +238,13 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
   }
 
   // 3. Send (interleaved across inboxes; delay between each step in the merged queue)
-  for (let i = 0; i < sendQueue.length; i++) {
-    const { inboxId, contact } = sendQueue[i]!
+  const batch = sendQueue.slice(0, MAX_SENDS_PER_RUN)
+  result.queuedThisRun = sendQueue.length
+  result.maxSendsPerRun = MAX_SENDS_PER_RUN
+  result.truncated = sendQueue.length > batch.length
+
+  for (let i = 0; i < batch.length; i++) {
+    const { inboxId, contact } = batch[i]!
     const step = (contact.sequenceStep ?? 0) + 1
 
     let subject: string | null = null
@@ -320,7 +331,7 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
       }
     }
 
-    if (!dryRun && i < sendQueue.length - 1) {
+    if (!dryRun && i < batch.length - 1) {
       await randomDelay()
     }
   }

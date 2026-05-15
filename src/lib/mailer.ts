@@ -111,8 +111,18 @@ export async function sendNotificationEmail(subject: string, text: string): Prom
   }
 }
 
-// Random delay between sends to avoid spam triggers (ms)
-export function randomDelay(minSeconds = 45, maxSeconds = 120): Promise<void> {
-  const ms = (minSeconds + Math.random() * (maxSeconds - minSeconds)) * 1000
+function sendDelayBounds() {
+  const min = Number(process.env.SEND_DELAY_MIN_SECONDS ?? 20)
+  const max = Number(process.env.SEND_DELAY_MAX_SECONDS ?? 45)
+  return { min: Math.max(0, min), max: Math.max(min, max) }
+}
+
+/** Pause between sends (warmup spacing). Defaults 20–45s; override via env. */
+export function randomDelay(minSeconds?: number, maxSeconds?: number): Promise<void> {
+  const bounds = sendDelayBounds()
+  const min = minSeconds ?? bounds.min
+  const max = maxSeconds ?? bounds.max
+  if (max <= 0) return Promise.resolve()
+  const ms = (min + Math.random() * (max - min)) * 1000
   return new Promise((res) => setTimeout(res, ms))
 }

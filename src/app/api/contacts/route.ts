@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db/client'
-import { contacts } from '@/lib/db/schema'
-import { eq, count, sql } from 'drizzle-orm'
+import { campaigns, contacts } from '@/lib/db/schema'
+import { and, eq, count, sql } from 'drizzle-orm'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,16 +21,29 @@ const ALLOWED_STATUSES = new Set([
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const status = searchParams.get('status')
+  const campaignIdParam = searchParams.get('campaignId')
   const page = parseInt(searchParams.get('page') || '1')
   const limit = parseInt(searchParams.get('limit') || '50')
   const offset = (page - 1) * limit
 
-  const conditions = status && status !== 'all' ? [eq(contacts.status, status)] : []
+  const conditions = []
+  if (status && status !== 'all') conditions.push(eq(contacts.status, status))
+  if (campaignIdParam && campaignIdParam !== 'all') {
+    const campaignId = Number(campaignIdParam)
+    if (!Number.isInteger(campaignId) || campaignId <= 0) {
+      return NextResponse.json({ error: 'Invalid campaignId' }, { status: 400 })
+    }
+    conditions.push(eq(contacts.campaignId, campaignId))
+  }
+
+  const whereClause = conditions.length > 0 ? and(...conditions) : sql`1=1`
 
   const [rows, [total]] = await Promise.all([
     db
       .select({
         id: contacts.id,
+        campaignId: contacts.campaignId,
+        campaignName: campaigns.name,
         firstName: contacts.firstName,
         lastName: contacts.lastName,
         primaryEmail: contacts.primaryEmail,
@@ -46,13 +59,14 @@ export async function GET(req: NextRequest) {
         state: contacts.state,
       })
       .from(contacts)
-      .where(conditions.length > 0 ? conditions[0] : sql`1=1`)
+      .leftJoin(campaigns, eq(contacts.campaignId, campaigns.id))
+      .where(whereClause)
       .limit(limit)
       .offset(offset),
     db
       .select({ count: count() })
       .from(contacts)
-      .where(conditions.length > 0 ? conditions[0] : sql`1=1`),
+      .where(whereClause),
   ])
 
   return NextResponse.json({ contacts: rows, total: total.count, page, limit })

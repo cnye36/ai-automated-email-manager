@@ -1,6 +1,15 @@
 'use client'
 import { useState } from 'react'
-import { runSendQueueAction } from '@/app/actions'
+import type { SendRunResult } from '@/lib/scheduler'
+
+function formatSendResult(result: SendRunResult) {
+  if (result.blockedReason) return result.blockedReason
+  let msg = `Sent: ${result.sent} | Failed: ${result.failed} | Skipped: ${result.skipped}`
+  if (result.truncated && result.queuedThisRun != null && result.maxSendsPerRun != null) {
+    msg += ` · ${result.queuedThisRun - result.maxSendsPerRun} more queued for next run`
+  }
+  return msg
+}
 
 export default function SendTrigger() {
   const [loading, setLoading] = useState(false)
@@ -10,14 +19,16 @@ export default function SendTrigger() {
     setLoading(true)
     setResult(null)
     try {
-      const data = await runSendQueueAction(dryRun)
-      if (!data.ok) {
-        setResult(`Error: ${data.error}`)
+      const res = await fetch('/api/send/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setResult(`Error: ${data.error || res.statusText}`)
       } else {
-        const result = data.result
-        setResult(result.blockedReason
-          ? result.blockedReason
-          : `Sent: ${result.sent} | Failed: ${result.failed} | Skipped: ${result.skipped}`)
+        setResult(formatSendResult(data.result))
       }
     } catch (e) {
       setResult(`Error: ${e}`)
