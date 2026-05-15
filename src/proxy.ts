@@ -3,7 +3,9 @@ import { updateSession } from '@/lib/supabase/proxy'
 
 const PUBLIC_PATHS = [
   '/login',
+  '/signup',
   '/api/auth/login',
+  '/api/auth/signup',
   '/api/auth/logout',
   '/api/track',
   '/api/cron',
@@ -31,7 +33,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  if (pathname === '/login') {
+  if (pathname === '/login' || pathname === '/signup') {
     const url = request.nextUrl.clone()
     url.pathname = '/'
     url.search = ''

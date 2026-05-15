@@ -15,7 +15,7 @@ const NAV = [
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
 
-  if (pathname === '/login') {
+  if (pathname === '/login' || pathname === '/signup') {
     return <main className="flex-1 overflow-auto">{children}</main>
   }
 
