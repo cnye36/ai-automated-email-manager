@@ -4,12 +4,13 @@ import { count, gte, isNotNull } from 'drizzle-orm'
 import { getInboxConfigs } from '@/lib/config'
 import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
 import { getSendWindowSummary } from '@/lib/scheduler'
+import { startOfTodayInSendTimezone } from '@/lib/send-timezone'
 import SendTrigger from '@/components/SendTrigger'
 
 export const dynamic = 'force-dynamic'
 
 async function getStats() {
-  const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+  const todayStart = startOfTodayInSendTimezone()
   const [totalContacts] = await db.select({ count: count() }).from(contacts)
   const [sentToday] = await db.select({ count: count() }).from(sentEmails).where(gte(sentEmails.sentAt, todayStart))
   const [totalSent] = await db.select({ count: count() }).from(sentEmails)
@@ -73,7 +74,8 @@ export default async function Dashboard() {
             {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </p>
           <p className="text-gray-500 text-xs mt-1">
-            Sending window: {sendWindow.startHour}:00-{sendWindow.endHour}:00{sendWindow.weekdaysOnly ? ' · Mon-Fri only' : ''}
+            Sending window: {sendWindow.startHour}:00-{sendWindow.endHour}:00 {sendWindow.timezoneLabel}
+            {sendWindow.weekdaysOnly ? ' · Mon-Fri only' : ''}
           </p>
         </div>
         <SendTrigger />

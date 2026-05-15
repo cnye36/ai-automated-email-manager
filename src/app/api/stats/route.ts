@@ -2,11 +2,12 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db/client'
 import { contacts, sentEmails, inboxes } from '@/lib/db/schema'
 import { count, gte, isNotNull } from 'drizzle-orm'
+import { startOfTodayInSendTimezone } from '@/lib/send-timezone'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+  const todayStart = startOfTodayInSendTimezone()
 
   const [[totalContacts], [sentToday], [totalSent], [totalOpened], [totalReplied], allInboxes] =
     await Promise.all([

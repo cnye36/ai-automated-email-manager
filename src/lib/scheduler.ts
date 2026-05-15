@@ -7,7 +7,14 @@ import { getDailyLimit } from './warmup'
 import { getInboxConfigs } from './config'
 import type { InboxConfig } from './config'
 import { v4 as uuidv4 } from 'uuid'
-import { format } from 'date-fns'
+import {
+  addCalendarDays,
+  getSendTimezone,
+  getSendTimezoneLabel,
+  getZonedClock,
+  todayInSendTimezone,
+  zonedLocalToUtc,
+} from './send-timezone'
 
 const SEQUENCE_DELAY_DAYS = 3 // days between sequence steps
 const SEND_WINDOW_START_HOUR = Number(process.env.SEND_WINDOW_START_HOUR ?? 8)
@@ -22,51 +29,48 @@ export interface SendRunResult {
   details: Array<{ contactId: number; inboxId: string; step: number; success: boolean; error?: string }>
 }
 
-function todayStr(): string {
-  return format(new Date(), 'yyyy-MM-dd')
-}
-
 function isAllowedSendTime(date: Date): boolean {
-  const day = date.getDay()
-  const hour = date.getHours()
-  const isWeekend = day === 0 || day === 6
+  const { hour, dayOfWeek } = getZonedClock(date)
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
 
   if (SEND_WEEKDAYS_ONLY && isWeekend) return false
   return hour >= SEND_WINDOW_START_HOUR && hour < SEND_WINDOW_END_HOUR
 }
 
 function nextAllowedSendAt(date: Date): number {
-  const candidate = new Date(date)
-
-  if (isAllowedSendTime(candidate)) {
-    return Math.floor(candidate.getTime() / 1000)
+  if (isAllowedSendTime(date)) {
+    return Math.floor(date.getTime() / 1000)
   }
 
-  candidate.setMinutes(Math.floor(Math.random() * 45), Math.floor(Math.random() * 60), 0)
+  const randomMinute = Math.floor(Math.random() * 45)
+  const randomSecond = Math.floor(Math.random() * 60)
+  let { year, month, day, hour, dayOfWeek } = getZonedClock(date)
 
   while (true) {
-    const day = candidate.getDay()
-    const isWeekend = day === 0 || day === 6
-    const hour = candidate.getHours()
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
 
     if (SEND_WEEKDAYS_ONLY && isWeekend) {
-      candidate.setDate(candidate.getDate() + (day === 6 ? 2 : 1))
-      candidate.setHours(SEND_WINDOW_START_HOUR, Math.floor(Math.random() * 45), 0, 0)
+      const add = dayOfWeek === 6 ? 2 : 1
+      ;({ year, month, day } = addCalendarDays(year, month, day, add))
+      dayOfWeek = 1
+      hour = SEND_WINDOW_START_HOUR
       continue
     }
 
     if (hour < SEND_WINDOW_START_HOUR) {
-      candidate.setHours(SEND_WINDOW_START_HOUR, Math.floor(Math.random() * 45), 0, 0)
-      continue
+      return Math.floor(
+        zonedLocalToUtc(year, month, day, SEND_WINDOW_START_HOUR, randomMinute, randomSecond).getTime() / 1000,
+      )
     }
 
     if (hour >= SEND_WINDOW_END_HOUR) {
-      candidate.setDate(candidate.getDate() + 1)
-      candidate.setHours(SEND_WINDOW_START_HOUR, Math.floor(Math.random() * 45), 0, 0)
+      ;({ year, month, day } = addCalendarDays(year, month, day, 1))
+      dayOfWeek = (dayOfWeek + 1) % 7
+      hour = SEND_WINDOW_START_HOUR
       continue
     }
 
-    return Math.floor(candidate.getTime() / 1000)
+    return Math.floor(zonedLocalToUtc(year, month, day, hour, randomMinute, randomSecond).getTime() / 1000)
   }
 }
 
@@ -75,11 +79,13 @@ export function getSendWindowSummary() {
     startHour: SEND_WINDOW_START_HOUR,
     endHour: SEND_WINDOW_END_HOUR,
     weekdaysOnly: SEND_WEEKDAYS_ONLY,
+    timezone: getSendTimezone(),
+    timezoneLabel: getSendTimezoneLabel(),
   }
 }
 
 async function resetDailyCountsIfNeeded() {
-  const today = todayStr()
+  const today = todayInSendTimezone()
   await db
     .update(inboxes)
     .set({ sentToday: 0, lastSentDate: today })
@@ -122,10 +128,11 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
   const result: SendRunResult = { sent: 0, failed: 0, skipped: 0, details: [] }
   const nowDate = new Date()
   const now = Math.floor(nowDate.getTime() / 1000)
-  const today = todayStr()
+  const today = todayInSendTimezone()
+  const tzLabel = getSendTimezoneLabel()
 
   if (!isAllowedSendTime(nowDate)) {
-    result.blockedReason = `Outside send window (${SEND_WINDOW_START_HOUR}:00-${SEND_WINDOW_END_HOUR}:00${SEND_WEEKDAYS_ONLY ? ', Monday-Friday' : ''})`
+    result.blockedReason = `Outside send window (${SEND_WINDOW_START_HOUR}:00-${SEND_WINDOW_END_HOUR}:00 ${tzLabel}${SEND_WEEKDAYS_ONLY ? ', Monday-Friday' : ''})`
     return result
   }
 
