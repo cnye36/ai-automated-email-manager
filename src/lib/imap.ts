@@ -1,7 +1,7 @@
 import { ImapFlow } from 'imapflow'
 import { db } from './db/client'
 import { sentEmails, contacts, replyEvents } from './db/schema'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull } from 'drizzle-orm'
 import { getActiveInboxConfigs } from './config'
 import { sendNotificationEmail } from './mailer'
 
@@ -43,12 +43,14 @@ export async function checkRepliesForInbox(inboxId: string): Promise<ReplyMatch[
       const pendingSent = await db
         .select()
         .from(sentEmails)
-        .where(eq(sentEmails.inboxId, inboxId))
+        .where(and(
+          eq(sentEmails.inboxId, inboxId),
+          isNotNull(sentEmails.messageId),
+          isNull(sentEmails.repliedAt)
+        ))
 
       const messageIdMap = new Map(
-        pendingSent
-          .filter((s) => s.messageId && !s.repliedAt)
-          .map((s) => [s.messageId!, s])
+        pendingSent.map((s) => [s.messageId!, s])
       )
 
       if (messageIdMap.size === 0) {
