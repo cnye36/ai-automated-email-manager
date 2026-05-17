@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
 import CampaignSendControls from '@/components/CampaignSendControls'
 
 export interface CampaignRow {
@@ -14,6 +14,13 @@ export interface CampaignRow {
   isLive: boolean
   sendingLabel: string
   sentEmails: number
+  openCount: number
+  replyCount: number
+  bounceCount: number
+  openRate: string
+  replyRate: string
+  bounceRate: string
+  assignedInboxIds: string[]
   emailCoverage: Array<{ step: number; complete: number; subjectOnly: number; bodyOnly: number }>
   previewContact: {
     firstName: string | null
@@ -28,7 +35,14 @@ export interface CampaignRow {
 interface ImportResult {
   imported: number
   skipped: number
+  duplicates: number
   errors: string[]
+}
+
+interface InboxOption {
+  id: string
+  address: string
+  active: boolean
 }
 
 function statusText(rows: CampaignRow['statusBreakdown']) {
@@ -51,16 +65,30 @@ export default function CampaignsManager({
   const [toggling, setToggling] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [preview, setPreview] = useState<CampaignRow | null>(null)
+  const [inboxOptions, setInboxOptions] = useState<InboxOption[]>([])
+  const [assigningCampaignId, setAssigningCampaignId] = useState<number | null>(null)
+  const [savingInboxes, setSavingInboxes] = useState(false)
+  const [selectedInboxIds, setSelectedInboxIds] = useState<string[]>([])
+
+  useEffect(() => {
+    fetch('/api/inboxes')
+      .then((r) => r.json())
+      .then((data: InboxOption[]) => setInboxOptions(data.map((i) => ({ id: i.id, address: i.address, active: i.active }))))
+      .catch(() => {})
+  }, [])
 
   async function load() {
     setLoading(true)
-    const [campaignRes, filesRes] = await Promise.all([
+    const [campaignRes, filesRes, inboxRes] = await Promise.all([
       fetch('/api/campaigns'),
       fetch('/api/campaign-files'),
+      fetch('/api/inboxes'),
     ])
     setCampaigns(await campaignRes.json())
     const filesData = await filesRes.json()
     setLocalFiles(filesData.files || [])
+    const inboxData = await inboxRes.json()
+    setInboxOptions(inboxData.map((i: InboxOption) => ({ id: i.id, address: i.address, active: i.active })))
     setLoading(false)
   }
 
@@ -79,13 +107,46 @@ export default function CampaignsManager({
         setMessage(`Import failed: ${data.error || res.statusText}`)
       } else {
         const result = data as ImportResult
-        setMessage(`Imported ${result.imported} contacts. Skipped ${result.skipped}.`)
+        const parts = [`Imported ${result.imported} contacts.`]
+        if (result.duplicates > 0) parts.push(`${result.duplicates} duplicates skipped.`)
+        if (result.skipped > 0) parts.push(`${result.skipped} rows had errors.`)
+        setMessage(parts.join(' '))
         form.reset()
         await load()
       }
     } finally {
       setUploading(false)
     }
+  }
+
+  function openInboxAssignment(campaign: CampaignRow) {
+    setAssigningCampaignId(campaign.id)
+    setSelectedInboxIds(campaign.assignedInboxIds ?? [])
+  }
+
+  async function saveInboxAssignment() {
+    if (assigningCampaignId === null) return
+    setSavingInboxes(true)
+    try {
+      const res = await fetch('/api/campaigns/inboxes', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: assigningCampaignId, inboxIds: selectedInboxIds }),
+      })
+      if (res.ok) {
+        setMessage(`Inbox assignment saved.`)
+        setAssigningCampaignId(null)
+        await load()
+      }
+    } finally {
+      setSavingInboxes(false)
+    }
+  }
+
+  function toggleSelectedInbox(inboxId: string) {
+    setSelectedInboxIds((prev) =>
+      prev.includes(inboxId) ? prev.filter((id) => id !== inboxId) : [...prev, inboxId]
+    )
   }
 
   async function importLocalFile(fileName: string) {
@@ -258,15 +319,14 @@ export default function CampaignsManager({
           <thead>
             <tr className="text-xs text-gray-500 uppercase border-b border-gray-800">
               <th className="text-left px-5 py-3">Campaign</th>
-              <th className="text-left px-5 py-3">File</th>
-              <th className="text-left px-5 py-3">Imported</th>
               <th className="text-left px-5 py-3">Contacts</th>
-              <th className="text-left px-5 py-3">Email Content</th>
               <th className="text-left px-5 py-3">Sent</th>
-              <th className="text-left px-5 py-3">Status</th>
+              <th className="text-left px-5 py-3">Opens</th>
+              <th className="text-left px-5 py-3">Replies</th>
+              <th className="text-left px-5 py-3">Bounces</th>
+              <th className="text-left px-5 py-3">Inboxes</th>
               <th className="text-left px-5 py-3">Sending</th>
-              <th className="text-right px-5 py-3">Preview</th>
-              <th className="text-right px-5 py-3">Delete</th>
+              <th className="text-right px-5 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
@@ -276,15 +336,37 @@ export default function CampaignsManager({
               <tr><td className="px-5 py-4 text-gray-500" colSpan={10}>No campaigns imported yet.</td></tr>
             ) : campaigns.map((campaign) => (
               <tr key={campaign.id} className="hover:bg-gray-800/40">
-                <td className="px-5 py-3 text-gray-100 font-medium">{campaign.name}</td>
-                <td className="px-5 py-3 text-gray-500 font-mono text-xs">{campaign.fileName || '-'}</td>
-                <td className="px-5 py-3 text-gray-400 whitespace-nowrap">
-                  {campaign.importedAt ? new Date(campaign.importedAt * 1000).toLocaleDateString() : '-'}
+                <td className="px-5 py-3">
+                  <div className="text-gray-100 font-medium">{campaign.name}</div>
+                  <div className="text-gray-500 font-mono text-xs mt-0.5">{campaign.fileName || ''}</div>
                 </td>
                 <td className="px-5 py-3 text-gray-300">{campaign.totalContacts || 0}</td>
-                <td className="px-5 py-3 text-gray-300 whitespace-nowrap">{coverageLabel(campaign)}</td>
                 <td className="px-5 py-3 text-gray-300">{campaign.sentEmails}</td>
-                <td className="px-5 py-3 text-gray-500">{statusText(campaign.statusBreakdown)}</td>
+                <td className="px-5 py-3">
+                  <span className="text-blue-400 font-medium">{campaign.openCount}</span>
+                  <span className="text-gray-500 text-xs ml-1">{campaign.openRate}%</span>
+                </td>
+                <td className="px-5 py-3">
+                  <span className="text-emerald-400 font-medium">{campaign.replyCount}</span>
+                  <span className="text-gray-500 text-xs ml-1">{campaign.replyRate}%</span>
+                </td>
+                <td className="px-5 py-3">
+                  <span className={`font-medium ${Number(campaign.bounceRate) >= 5 ? 'text-red-400' : Number(campaign.bounceRate) >= 2 ? 'text-amber-400' : 'text-gray-400'}`}>
+                    {campaign.bounceCount}
+                  </span>
+                  <span className="text-gray-500 text-xs ml-1">{campaign.bounceRate}%</span>
+                  {Number(campaign.bounceRate) >= 5 && <span className="ml-1 text-red-400 text-xs font-bold">⚠</span>}
+                </td>
+                <td className="px-5 py-3">
+                  <button
+                    onClick={() => openInboxAssignment(campaign)}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 underline-offset-2 hover:underline"
+                  >
+                    {(campaign.assignedInboxIds?.length ?? 0) > 0
+                      ? `${campaign.assignedInboxIds.length} assigned`
+                      : 'Any (all)'}
+                  </button>
+                </td>
                 <td className="px-5 py-3">
                   {campaign.sendingLabel === 'Live' ? (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-950 px-2.5 py-0.5 text-xs font-medium text-emerald-300 border border-emerald-800">
@@ -301,26 +383,20 @@ export default function CampaignsManager({
                     </span>
                   )}
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-right space-x-2 whitespace-nowrap">
                   <button
                     onClick={() => setPreview(campaign)}
                     disabled={!campaign.previewContact}
                     className="rounded-md bg-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    View
+                    Preview
                   </button>
-                </td>
-                <td className="px-5 py-3 text-right space-x-2 whitespace-nowrap">
                   <button
                     onClick={() => setCampaignActive(campaign, campaign.active === false)}
                     disabled={toggling !== null || deleting !== null || uploading}
                     className="rounded-md bg-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    {toggling === campaign.id
-                      ? 'Saving...'
-                      : campaign.active === false
-                        ? 'Resume'
-                        : 'Pause'}
+                    {toggling === campaign.id ? 'Saving...' : campaign.active === false ? 'Resume' : 'Pause'}
                   </button>
                   <button
                     onClick={() => deleteCampaign(campaign)}
@@ -335,6 +411,60 @@ export default function CampaignsManager({
           </tbody>
         </table>
       </div>
+
+      {/* Inbox Assignment Modal */}
+      {assigningCampaignId !== null && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-lg">
+            <div className="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold text-white">Assign Inboxes</h2>
+                <p className="text-xs text-gray-400 mt-1">
+                  Select which inboxes send for this campaign. Leave all unchecked to use all active inboxes.
+                </p>
+              </div>
+              <button onClick={() => setAssigningCampaignId(null)} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
+            </div>
+            <div className="p-5 space-y-2 max-h-80 overflow-y-auto">
+              {inboxOptions.length === 0 && (
+                <p className="text-gray-500 text-sm">No inboxes configured.</p>
+              )}
+              {inboxOptions.map((inbox) => (
+                <label key={inbox.id} className="flex items-center gap-3 p-2.5 rounded-md hover:bg-gray-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedInboxIds.includes(inbox.id)}
+                    onChange={() => toggleSelectedInbox(inbox.id)}
+                    className="rounded border-gray-600 bg-gray-800 text-indigo-500"
+                  />
+                  <span className="font-mono text-sm text-indigo-300">{inbox.address}</span>
+                  {!inbox.active && <span className="text-xs text-gray-500">(paused)</span>}
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-between border-t border-gray-800 px-5 py-4">
+              <span className="text-xs text-gray-500">
+                {selectedInboxIds.length === 0 ? 'All active inboxes will be used' : `${selectedInboxIds.length} inbox${selectedInboxIds.length !== 1 ? 'es' : ''} selected`}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setAssigningCampaignId(null)}
+                  className="rounded-md bg-gray-700 px-4 py-1.5 text-sm text-gray-200 hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveInboxAssignment}
+                  disabled={savingInboxes}
+                  className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  {savingInboxes ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {preview?.previewContact && (
         <div className="fixed inset-0 z-50 bg-black/70 p-6 overflow-auto">

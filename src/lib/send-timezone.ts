@@ -120,3 +120,32 @@ export function addCalendarDays(year: number, month: number, day: number, days: 
     day: dt.getUTCDate(),
   }
 }
+
+/** Advance a zoned calendar date by N weekdays (Mon–Fri). Skips Sat/Sun. */
+export function addBusinessDays(
+  year: number,
+  month: number,
+  day: number,
+  businessDays: number,
+): { year: number; month: number; day: number } {
+  let y = year
+  let m = month
+  let d = day
+  let remaining = businessDays
+
+  while (remaining > 0) {
+    ;({ year: y, month: m, day: d } = addCalendarDays(y, m, d, 1))
+    const probe = zonedLocalToUtc(y, m, d, 12, 0, 0)
+    const dow = getZonedClock(probe).dayOfWeek
+    if (dow !== 0 && dow !== 6) remaining--
+  }
+
+  return { year: y, month: m, day: d }
+}
+
+/** Unix seconds for the same local time on a date N business days after `from`. */
+export function addBusinessDaysToDate(from: Date, businessDays: number, timeZone = getSendTimezone()): Date {
+  const z = getZonedClock(from, timeZone)
+  const target = addBusinessDays(z.year, z.month, z.day, businessDays)
+  return zonedLocalToUtc(target.year, target.month, target.day, z.hour, z.minute, 0, timeZone)
+}

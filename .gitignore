@@ -47,3 +47,5 @@ config/inboxes.json
 .env.local
 /campaigns/
 
+.vercel
+.env*.local

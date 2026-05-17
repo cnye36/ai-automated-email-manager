@@ -10,6 +10,13 @@ interface InboxStatus {
   dailyLimit: number
   sentToday: number
   totalSent: number
+  bounceCount: number
+  opens: number
+  replies: number
+  bounces: number
+  openRate: string
+  replyRate: string
+  bounceRate: string
 }
 
 export default function InboxesPage() {
@@ -74,15 +81,33 @@ export default function InboxesPage() {
                     {inbox.active ? 'Active' : 'Paused'}
                   </span>
                 </div>
-                <div className="flex gap-6 text-xs text-gray-500">
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
                   <span>Warmup Day <strong className="text-gray-300">{inbox.warmupDay}</strong></span>
-                  <span>Daily Limit <strong className="text-gray-300">{inbox.dailyLimit}/day</strong></span>
+                  <span>Limit <strong className="text-gray-300">{inbox.dailyLimit}/day</strong></span>
                   <span>Sent Today <strong className="text-gray-300">{inbox.sentToday}</strong></span>
-                  <span>Total Sent <strong className="text-gray-300">{inbox.totalSent.toLocaleString()}</strong></span>
+                  <span>Total <strong className="text-gray-300">{inbox.totalSent.toLocaleString()}</strong></span>
+                </div>
+
+                {/* Health stats row */}
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs mt-1.5">
+                  <span className="text-gray-500">Opens <strong className="text-blue-400">{inbox.opens} ({inbox.openRate}%)</strong></span>
+                  <span className="text-gray-500">Replies <strong className="text-emerald-400">{inbox.replies} ({inbox.replyRate}%)</strong></span>
+                  <span className="text-gray-500">
+                    Bounces{' '}
+                    <strong className={
+                      Number(inbox.bounceRate) >= 5 ? 'text-red-400' :
+                      Number(inbox.bounceRate) >= 2 ? 'text-amber-400' :
+                      'text-gray-300'
+                    }>
+                      {inbox.bounces} ({inbox.bounceRate}%)
+                    </strong>
+                    {Number(inbox.bounceRate) >= 5 && <span className="ml-1 text-red-400 font-bold">⚠ HIGH</span>}
+                    {Number(inbox.bounceRate) >= 2 && Number(inbox.bounceRate) < 5 && <span className="ml-1 text-amber-400">↑ elevated</span>}
+                  </span>
                 </div>
 
                 {/* Warmup progress bar */}
-                <div className="mt-3 flex items-center gap-3">
+                <div className="mt-2.5 flex items-center gap-3">
                   <div className="flex-1 bg-gray-800 rounded-full h-1.5 max-w-[240px]">
                     <div
                       className="bg-indigo-500 h-1.5 rounded-full"

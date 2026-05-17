@@ -32,6 +32,7 @@ async function run(req: NextRequest) {
           results: replyResults,
           totalReplies: replyResults.reduce((sum, row) => sum + row.replies, 0),
           totalNewReplies: replyResults.reduce((sum, row) => sum + row.newReplies, 0),
+          totalNewBounces: replyResults.reduce((sum, row) => sum + row.newBounces, 0),
         },
       })
     }
@@ -49,6 +50,7 @@ async function run(req: NextRequest) {
         results: replyResults,
         totalReplies: replyResults.reduce((sum, row) => sum + row.replies, 0),
         totalNewReplies: replyResults.reduce((sum, row) => sum + row.newReplies, 0),
+        totalNewBounces: replyResults.reduce((sum, row) => sum + row.newBounces, 0),
       },
       send: sendResult,
     })

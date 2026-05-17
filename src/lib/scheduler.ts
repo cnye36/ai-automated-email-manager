@@ -1,5 +1,5 @@
 import { db } from './db/client'
-import { campaigns, contacts, sentEmails, inboxes } from './db/schema'
+import { campaigns, contacts, sentEmails, inboxes, campaignInboxes } from './db/schema'
 import { eq, lte, and, sql, inArray } from 'drizzle-orm'
 import { sendEmail, randomDelay } from './mailer'
 import { ensureEmailBodyHtmlForSend } from './email-body'
@@ -8,15 +8,16 @@ import { getInboxConfigs } from './config'
 import type { InboxConfig } from './config'
 import { v4 as uuidv4 } from 'uuid'
 import {
+  addBusinessDaysToDate,
   addCalendarDays,
-  getSendTimezone,
   getSendTimezoneLabel,
   getZonedClock,
   todayInSendTimezone,
   zonedLocalToUtc,
 } from './send-timezone'
 
-const SEQUENCE_DELAY_DAYS = 3 // days between sequence steps
+/** Business days between sequence steps (Mon–Fri only; weekends are skipped). */
+const SEQUENCE_DELAY_BUSINESS_DAYS = 3
 const SEND_WINDOW_START_HOUR = Number(process.env.SEND_WINDOW_START_HOUR ?? 8)
 const SEND_WINDOW_END_HOUR = Number(process.env.SEND_WINDOW_END_HOUR ?? 18)
 const SEND_WEEKDAYS_ONLY = process.env.SEND_WEEKDAYS_ONLY !== 'false'
@@ -85,8 +86,64 @@ export function getSendWindowSummary() {
     startHour: SEND_WINDOW_START_HOUR,
     endHour: SEND_WINDOW_END_HOUR,
     weekdaysOnly: SEND_WEEKDAYS_ONLY,
-    timezone: getSendTimezone(),
+    sequenceDelayBusinessDays: SEQUENCE_DELAY_BUSINESS_DAYS,
     timezoneLabel: getSendTimezoneLabel(),
+  }
+}
+
+/** Next send time after a sequence step: N business days later, snapped to the send window. */
+export function nextSequenceSendAt(fromDate: Date): number {
+  const afterDelay = addBusinessDaysToDate(fromDate, SEQUENCE_DELAY_BUSINESS_DAYS)
+  return nextAllowedSendAt(afterDelay)
+}
+
+/**
+ * Contacts that were due but not sent (budget/window limits) keep a past nextSendDate and
+ * are picked up on the next run. Contacts stuck with a future nextSendDate from old
+ * calendar-day math are moved forward when their business-day wait has elapsed.
+ */
+async function resyncActiveContactSchedules(activeCampaignIds: number[], nowDate: Date) {
+  if (activeCampaignIds.length === 0) return
+
+  const now = Math.floor(nowDate.getTime() / 1000)
+  const nextSlot = nextAllowedSendAt(nowDate)
+
+  // Overdue: due now or earlier → snap to the next allowed send window
+  await db
+    .update(contacts)
+    .set({ nextSendDate: nextSlot, updatedAt: now })
+    .where(and(
+      eq(contacts.status, 'active'),
+      inArray(contacts.campaignId, activeCampaignIds),
+      lte(contacts.nextSendDate, now),
+    ))
+
+  // Stuck in the future: last send was long enough ago (business days) but nextSendDate not reached
+  const stuck = await db
+    .select({
+      id: contacts.id,
+      nextSendDate: contacts.nextSendDate,
+      lastSentAt: sql<number>`max(${sentEmails.sentAt})`.as('last_sent_at'),
+    })
+    .from(contacts)
+    .innerJoin(sentEmails, eq(sentEmails.contactId, contacts.id))
+    .where(and(
+      eq(contacts.status, 'active'),
+      inArray(contacts.campaignId, activeCampaignIds),
+      sql`${contacts.nextSendDate} > ${now}`,
+      sql`${contacts.sequenceStep} >= 1`,
+    ))
+    .groupBy(contacts.id, contacts.nextSendDate)
+
+  for (const row of stuck) {
+    if (!row.lastSentAt) continue
+    const dueAt = nextSequenceSendAt(new Date(row.lastSentAt * 1000))
+    if (dueAt <= now) {
+      await db
+        .update(contacts)
+        .set({ nextSendDate: nextSlot, updatedAt: now })
+        .where(eq(contacts.id, row.id))
+    }
   }
 }
 
@@ -134,6 +191,15 @@ async function getActiveCampaignIds(): Promise<number[]> {
   return rows.map((row) => row.id)
 }
 
+/** Returns the inbox IDs assigned to a campaign, or null if no specific assignment (use all). */
+async function getCampaignAssignedInboxIds(campaignId: number): Promise<string[] | null> {
+  const rows = await db
+    .select({ inboxId: campaignInboxes.inboxId })
+    .from(campaignInboxes)
+    .where(eq(campaignInboxes.campaignId, campaignId))
+  return rows.length > 0 ? rows.map((r) => r.inboxId) : null
+}
+
 export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResult> {
   await syncInboxesFromConfig()
   await resetDailyCountsIfNeeded()
@@ -149,6 +215,9 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     result.blockedReason = `Outside send window (${SEND_WINDOW_START_HOUR}:00-${SEND_WINDOW_END_HOUR}:00 ${tzLabel}${SEND_WEEKDAYS_ONLY ? ', Monday-Friday' : ''})`
     return result
   }
+
+  const activeCampaignIds = await getActiveCampaignIds()
+  await resyncActiveContactSchedules(activeCampaignIds, nowDate)
 
   // Build per-inbox budget
   const budgets = new Map<string, number>()
@@ -168,22 +237,34 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
 
   // 1. Activate pending contacts that haven't started yet (assign to inbox)
   const inboxIds = configs.map((c) => c.id)
-  const activeCampaignIds = await getActiveCampaignIds()
   const pendingContacts =
     activeCampaignIds.length === 0
       ? []
       : await db
           .select()
           .from(contacts)
-          .where(and(eq(contacts.status, 'pending'), inArray(contacts.campaignId, activeCampaignIds)))
+          .where(and(
+            eq(contacts.status, 'pending'),
+            inArray(contacts.campaignId, activeCampaignIds),
+          ))
           .limit(totalBudget)
 
-  // Round-robin assign
-  const inboxQueue = [...inboxIds]
+  // Round-robin assign — respects per-campaign inbox restrictions
+  // Build a per-campaign queue so each campaign cycles through its own assigned inboxes
+  const campaignInboxQueues = new Map<number, string[]>()
   for (const contact of pendingContacts) {
-    if (inboxQueue.length === 0) break
-    const inboxId = inboxQueue[0]
-    inboxQueue.push(inboxQueue.shift()!) // rotate
+    const cid = contact.campaignId!
+    if (!campaignInboxQueues.has(cid)) {
+      const assigned = await getCampaignAssignedInboxIds(cid)
+      // Filter to only active inboxes with remaining budget
+      const eligible = (assigned ?? inboxIds).filter((id) => (budgets.get(id) ?? 0) > 0)
+      campaignInboxQueues.set(cid, eligible.length > 0 ? [...eligible] : [...inboxIds])
+    }
+
+    const queue = campaignInboxQueues.get(cid)!
+    if (queue.length === 0) continue
+    const inboxId = queue[0]
+    queue.push(queue.shift()!)
     await db
       .update(contacts)
       .set({ status: 'active', assignedInboxId: inboxId, nextSendDate: nextAllowedSendAt(nowDate), updatedAt: now })
@@ -258,9 +339,6 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
       result.skipped++
     } else {
       const trackingPixelId = uuidv4()
-      const nextSendDate = step < 3
-        ? nextAllowedSendAt(new Date((Math.floor(Date.now() / 1000) + SEQUENCE_DELAY_DAYS * 24 * 60 * 60) * 1000))
-        : null
 
       if (!dryRun) {
         const htmlBody = await ensureEmailBodyHtmlForSend(body)
@@ -274,6 +352,9 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
         })
 
         const sentNow = Math.floor(Date.now() / 1000)
+        const nextSendDate = step < 3
+          ? nextSequenceSendAt(new Date(sentNow * 1000))
+          : null
 
         await db.insert(sentEmails).values({
           contactId: contact.id,

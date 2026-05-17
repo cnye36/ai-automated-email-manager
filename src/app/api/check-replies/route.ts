@@ -12,7 +12,9 @@ export async function POST(req: NextRequest) {
   try {
     const results = await checkAllReplies()
     const totalReplies = results.reduce((sum, r) => sum + r.replies, 0)
-    return NextResponse.json({ results, totalReplies })
+    const totalBounces = results.reduce((sum, r) => sum + r.bounces, 0)
+    const totalNewBounces = results.reduce((sum, r) => sum + r.newBounces, 0)
+    return NextResponse.json({ results, totalReplies, totalBounces, totalNewBounces })
   } catch (err) {
     console.error('Reply check error:', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })

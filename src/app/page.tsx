@@ -1,6 +1,6 @@
 import { db } from '@/lib/db/client'
 import { contacts, sentEmails, inboxes } from '@/lib/db/schema'
-import { count, gte, isNotNull } from 'drizzle-orm'
+import { and, count, eq, gte, isNotNull } from 'drizzle-orm'
 import { getInboxConfigs } from '@/lib/config'
 import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
 import { getSendWindowSummary } from '@/lib/scheduler'
@@ -17,6 +17,7 @@ async function getStats() {
   const [totalSent] = await db.select({ count: count() }).from(sentEmails)
   const [totalOpened] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.openedAt))
   const [totalReplied] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.repliedAt))
+  const [totalBounced] = await db.select({ count: count() }).from(sentEmails).where(isNotNull(sentEmails.bouncedAt))
   const statusRows = await db.select({ status: contacts.status, count: count() }).from(contacts).groupBy(contacts.status)
 
   return {
@@ -25,8 +26,10 @@ async function getStats() {
     totalSent: totalSent.count,
     totalOpened: totalOpened.count,
     totalReplied: totalReplied.count,
+    totalBounced: totalBounced.count,
     openRate: totalSent.count > 0 ? ((totalOpened.count / totalSent.count) * 100).toFixed(1) : '0.0',
     replyRate: totalSent.count > 0 ? ((totalReplied.count / totalSent.count) * 100).toFixed(1) : '0.0',
+    bounceRate: totalSent.count > 0 ? ((totalBounced.count / totalSent.count) * 100).toFixed(1) : '0.0',
     statusRows,
   }
 }
@@ -36,8 +39,14 @@ async function getInboxSummary() {
   const rows = await db.select().from(inboxes)
   const rowMap = new Map(rows.map((r) => [r.id, r]))
 
-  return configs.map((c) => {
+  return Promise.all(configs.map(async (c) => {
     const row = rowMap.get(c.id)
+    const totalSent = row?.totalSent ?? 0
+
+    const [[bounces]] = await Promise.all([
+      db.select({ count: count() }).from(sentEmails).where(and(eq(sentEmails.inboxId, c.id), isNotNull(sentEmails.bouncedAt))),
+    ])
+
     return {
       id: c.id,
       address: c.address,
@@ -45,9 +54,11 @@ async function getInboxSummary() {
       warmupDay: getWarmupDay(c.warmupStartDate),
       dailyLimit: getDailyLimit(c.warmupStartDate),
       sentToday: row?.sentToday ?? 0,
-      totalSent: row?.totalSent ?? 0,
+      totalSent,
+      bounces: bounces.count,
+      bounceRate: totalSent > 0 ? ((bounces.count / totalSent) * 100).toFixed(1) : '0.0',
     }
-  })
+  }))
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
@@ -89,11 +100,12 @@ export default async function Dashboard() {
 
       <DashboardAutomationBanner />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         <StatCard label="Total Contacts" value={stats.totalContacts.toLocaleString()} />
         <StatCard label="Sent Today" value={stats.sentToday} sub={`of ${totalBudgetToday} budget`} />
         <StatCard label="Open Rate" value={`${stats.openRate}%`} sub={`${stats.totalOpened} opens`} />
         <StatCard label="Reply Rate" value={`${stats.replyRate}%`} sub={`${stats.totalReplied} replies`} />
+        <StatCard label="Bounce Rate" value={`${stats.bounceRate}%`} sub={`${stats.totalBounced} bounces`} />
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-lg mb-8">
@@ -106,9 +118,10 @@ export default async function Dashboard() {
               <tr className="text-xs text-gray-500 uppercase">
                 <th className="text-left px-5 py-3">Inbox</th>
                 <th className="text-left px-5 py-3">Day</th>
-                <th className="text-left px-5 py-3">Daily Limit</th>
+                <th className="text-left px-5 py-3">Limit</th>
                 <th className="text-left px-5 py-3">Sent Today</th>
-                <th className="text-left px-5 py-3">Total Sent</th>
+                <th className="text-left px-5 py-3">Total</th>
+                <th className="text-left px-5 py-3">Bounces</th>
                 <th className="text-left px-5 py-3">Status</th>
               </tr>
             </thead>
@@ -120,6 +133,12 @@ export default async function Dashboard() {
                   <td className="px-5 py-3 text-gray-300">{inbox.dailyLimit}/day</td>
                   <td className="px-5 py-3 text-gray-300">{inbox.sentToday}</td>
                   <td className="px-5 py-3 text-gray-300">{inbox.totalSent}</td>
+                  <td className="px-5 py-3">
+                    <span className={`text-xs font-medium ${Number(inbox.bounceRate) >= 5 ? 'text-red-400' : Number(inbox.bounceRate) >= 2 ? 'text-amber-400' : 'text-gray-400'}`}>
+                      {inbox.bounces} ({inbox.bounceRate}%)
+                      {Number(inbox.bounceRate) >= 5 && ' ⚠'}
+                    </span>
+                  </td>
                   <td className="px-5 py-3">
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${inbox.active ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-400'}`}>
                       {inbox.active ? 'Active' : 'Paused'}
