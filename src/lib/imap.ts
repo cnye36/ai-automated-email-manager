@@ -218,6 +218,12 @@ export async function checkBouncesForInbox(inboxId: string): Promise<BounceMatch
 }
 
 export async function checkAllReplies(): Promise<{ inbox: string; replies: number; newReplies: number; bounces: number; newBounces: number }[]> {
+  // Backfill openedAt for any replied emails that slipped through without it
+  await db
+    .update(sentEmails)
+    .set({ openedAt: sql`replied_at` })
+    .where(and(isNotNull(sentEmails.repliedAt), isNull(sentEmails.openedAt)))
+
   const configs = getActiveInboxConfigs()
   const results = []
 
@@ -272,7 +278,11 @@ export async function checkAllReplies(): Promise<{ inbox: string; replies: numbe
 
         await db
           .update(sentEmails)
-          .set({ repliedAt: match.repliedAt })
+          .set({
+            repliedAt: match.repliedAt,
+            // If they replied, they definitely opened it
+            openedAt: sql`COALESCE(opened_at, ${match.repliedAt})`,
+          })
           .where(eq(sentEmails.id, match.sentEmailId))
 
         await db

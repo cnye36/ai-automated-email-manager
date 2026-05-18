@@ -266,7 +266,8 @@ export async function buildAndRunSendQueue(
   const budgets = new Map<string, number>()
   for (const config of configs) {
     const [row] = await db.select().from(inboxes).where(eq(inboxes.id, config.id))
-    const limit = getDailyLimit(config.warmupStartDate)
+    const warmupStart = row?.warmupStartDate ?? config.warmupStartDate
+    const limit = getDailyLimit(warmupStart)
     const sentSoFar = row?.sentToday ?? 0
     const remaining = options?.ignoreDailyLimit
       ? 9999

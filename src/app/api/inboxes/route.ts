@@ -2,7 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db/client'
 import { inboxes, sentEmails } from '@/lib/db/schema'
 import { getInboxConfigs } from '@/lib/config'
-import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
+import {
+  getDailyLimit,
+  getWarmupDay,
+  isValidWarmupStartDate,
+  warmupStartDateForTargetDay,
+  warmupStartDateToday,
+} from '@/lib/warmup'
+import { resolveWarmupStartDate } from '@/lib/inbox-warmup'
+import { todayInSendTimezone } from '@/lib/send-timezone'
 import { and, count, eq, isNotNull } from 'drizzle-orm'
 
 export const dynamic = 'force-dynamic'
@@ -14,6 +22,7 @@ export async function GET() {
 
   const result = await Promise.all(configs.map(async (config) => {
     const row = rowMap.get(config.id)
+    const warmupStartDate = resolveWarmupStartDate(config.id, row?.warmupStartDate, config.warmupStartDate)
     const totalSent = row?.totalSent ?? 0
 
     const [[opens], [replies], [bounces]] = await Promise.all([
@@ -26,9 +35,9 @@ export async function GET() {
       id: config.id,
       address: config.address,
       active: row?.active ?? config.active,
-      warmupStartDate: config.warmupStartDate,
-      warmupDay: getWarmupDay(config.warmupStartDate),
-      dailyLimit: getDailyLimit(config.warmupStartDate),
+      warmupStartDate,
+      warmupDay: getWarmupDay(warmupStartDate),
+      dailyLimit: getDailyLimit(warmupStartDate),
       sentToday: row?.sentToday ?? 0,
       totalSent,
       bounceCount: row?.bounceCount ?? 0,
@@ -45,24 +54,111 @@ export async function GET() {
 }
 
 export async function PATCH(req: NextRequest) {
-  const { id, active } = await req.json()
+  const body = await req.json()
+  const { id, active, warmupStartDate, warmupDay, resetSentToday } = body as {
+    id?: string
+    active?: boolean
+    warmupStartDate?: string
+    warmupDay?: number
+    resetSentToday?: boolean
+  }
+
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
-  if (typeof active !== 'boolean') return NextResponse.json({ error: 'Missing active boolean' }, { status: 400 })
 
   const config = getInboxConfigs().find((inbox) => inbox.id === id)
   if (!config) return NextResponse.json({ error: 'Unknown inbox id' }, { status: 404 })
+
+  const hasActive = typeof active === 'boolean'
+  const hasWarmupDay = typeof warmupDay === 'number' && Number.isFinite(warmupDay)
+  const hasWarmupDate = typeof warmupStartDate === 'string'
+  const hasReset = resetSentToday === true
+
+  if (!hasActive && !hasWarmupDay && !hasWarmupDate && !hasReset) {
+    return NextResponse.json(
+      { error: 'Provide active, warmupDay, warmupStartDate, and/or resetSentToday' },
+      { status: 400 },
+    )
+  }
+
+  let resolvedWarmupDate: string | undefined
+  if (hasWarmupDay) {
+    if (warmupDay! < 1 || warmupDay! > 365) {
+      return NextResponse.json({ error: 'warmupDay must be between 1 and 365' }, { status: 400 })
+    }
+    resolvedWarmupDate = warmupStartDateForTargetDay(warmupDay!)
+  } else if (hasWarmupDate) {
+    if (!isValidWarmupStartDate(warmupStartDate!)) {
+      return NextResponse.json({ error: 'warmupStartDate must be YYYY-MM-DD' }, { status: 400 })
+    }
+    resolvedWarmupDate = warmupStartDate!
+  }
+
+  const today = todayInSendTimezone()
+  const update: Record<string, unknown> = {}
+  if (hasActive) update.active = active
+  if (resolvedWarmupDate) update.warmupStartDate = resolvedWarmupDate
+  if (hasReset) {
+    update.sentToday = 0
+    update.lastSentDate = today
+  }
+
+  const [existing] = await db.select().from(inboxes).where(eq(inboxes.id, id))
 
   await db
     .insert(inboxes)
     .values({
       id: config.id,
       address: config.address,
-      warmupStartDate: config.warmupStartDate,
-      active,
+      warmupStartDate: resolvedWarmupDate ?? existing?.warmupStartDate ?? config.warmupStartDate,
+      active: hasActive ? active! : (existing?.active ?? config.active),
+      sentToday: hasReset ? 0 : (existing?.sentToday ?? 0),
+      lastSentDate: hasReset ? today : existing?.lastSentDate,
     })
     .onConflictDoUpdate({
       target: inboxes.id,
-      set: { active },
+      set: update,
     })
-  return NextResponse.json({ ok: true })
+
+  const finalDate = resolvedWarmupDate ?? existing?.warmupStartDate ?? config.warmupStartDate
+  return NextResponse.json({
+    ok: true,
+    warmupStartDate: finalDate,
+    warmupDay: getWarmupDay(finalDate),
+    dailyLimit: getDailyLimit(finalDate),
+  })
+}
+
+/** Reset every configured inbox to warmup day 1 (today) and clear today's send count. */
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}))
+  if (body.action !== 'reset-all-warmup') {
+    return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+  }
+
+  const configs = getInboxConfigs()
+  const today = warmupStartDateToday()
+  const todayLabel = todayInSendTimezone()
+
+  for (const config of configs) {
+    await db
+      .insert(inboxes)
+      .values({
+        id: config.id,
+        address: config.address,
+        warmupStartDate: today,
+        active: config.active,
+        sentToday: 0,
+        lastSentDate: todayLabel,
+      })
+      .onConflictDoUpdate({
+        target: inboxes.id,
+        set: {
+          warmupStartDate: today,
+          sentToday: 0,
+          lastSentDate: todayLabel,
+        },
+      })
+  }
+
+  return NextResponse.json({ ok: true, warmupStartDate: today, inboxCount: configs.length })
 }
