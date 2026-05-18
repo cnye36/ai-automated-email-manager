@@ -10,6 +10,7 @@ const NAV = [
   { href: '/contacts', label: 'Contacts' },
   { href: '/replies', label: 'Replies' },
   { href: '/inboxes', label: 'Inboxes' },
+  { href: '/settings', label: 'Settings' },
 ]
 
 export default function AppShell({ children }: { children: React.ReactNode }) {

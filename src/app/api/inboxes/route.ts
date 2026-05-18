@@ -9,6 +9,7 @@ import {
   warmupStartDateForTargetDay,
   warmupStartDateToday,
 } from '@/lib/warmup'
+import { getEffectiveDailyLimit, isValidDailySendTarget } from '@/lib/inbox-send-limit'
 import { resolveWarmupStartDate } from '@/lib/inbox-warmup'
 import { todayInSendTimezone } from '@/lib/send-timezone'
 import { and, count, eq, isNotNull } from 'drizzle-orm'
@@ -31,13 +32,21 @@ export async function GET() {
       db.select({ count: count() }).from(sentEmails).where(and(eq(sentEmails.inboxId, config.id), isNotNull(sentEmails.bouncedAt))),
     ])
 
+    const warmupMaxLimit = getDailyLimit(warmupStartDate)
+    const dailySendTarget = row?.dailySendTarget ?? null
+    const effectiveDailyLimit = getEffectiveDailyLimit(warmupStartDate, dailySendTarget)
+
     return {
       id: config.id,
       address: config.address,
       active: row?.active ?? config.active,
       warmupStartDate,
       warmupDay: getWarmupDay(warmupStartDate),
-      dailyLimit: getDailyLimit(warmupStartDate),
+      warmupMaxLimit,
+      dailySendTarget,
+      effectiveDailyLimit,
+      /** @deprecated use effectiveDailyLimit */
+      dailyLimit: effectiveDailyLimit,
       sentToday: row?.sentToday ?? 0,
       totalSent,
       bounceCount: row?.bounceCount ?? 0,
@@ -55,12 +64,13 @@ export async function GET() {
 
 export async function PATCH(req: NextRequest) {
   const body = await req.json()
-  const { id, active, warmupStartDate, warmupDay, resetSentToday } = body as {
+  const { id, active, warmupStartDate, warmupDay, resetSentToday, dailySendTarget } = body as {
     id?: string
     active?: boolean
     warmupStartDate?: string
     warmupDay?: number
     resetSentToday?: boolean
+    dailySendTarget?: number | null
   }
 
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
@@ -72,10 +82,11 @@ export async function PATCH(req: NextRequest) {
   const hasWarmupDay = typeof warmupDay === 'number' && Number.isFinite(warmupDay)
   const hasWarmupDate = typeof warmupStartDate === 'string'
   const hasReset = resetSentToday === true
+  const hasSendTarget = dailySendTarget === null || typeof dailySendTarget === 'number'
 
-  if (!hasActive && !hasWarmupDay && !hasWarmupDate && !hasReset) {
+  if (!hasActive && !hasWarmupDay && !hasWarmupDate && !hasReset && !hasSendTarget) {
     return NextResponse.json(
-      { error: 'Provide active, warmupDay, warmupStartDate, and/or resetSentToday' },
+      { error: 'Provide active, warmupDay, warmupStartDate, dailySendTarget, and/or resetSentToday' },
       { status: 400 },
     )
   }
@@ -101,8 +112,22 @@ export async function PATCH(req: NextRequest) {
     update.sentToday = 0
     update.lastSentDate = today
   }
+  if (hasSendTarget) {
+    update.dailySendTarget = dailySendTarget === null ? null : Math.floor(dailySendTarget!)
+  }
 
   const [existing] = await db.select().from(inboxes).where(eq(inboxes.id, id))
+  const finalDatePreview = resolvedWarmupDate ?? existing?.warmupStartDate ?? config.warmupStartDate
+  const warmupMaxPreview = getDailyLimit(finalDatePreview)
+
+  if (hasSendTarget && dailySendTarget !== null) {
+    if (!isValidDailySendTarget(dailySendTarget, warmupMaxPreview)) {
+      return NextResponse.json(
+        { error: `dailySendTarget must be between 1 and ${warmupMaxPreview} (warmup max)` },
+        { status: 400 },
+      )
+    }
+  }
 
   await db
     .insert(inboxes)
@@ -120,11 +145,19 @@ export async function PATCH(req: NextRequest) {
     })
 
   const finalDate = resolvedWarmupDate ?? existing?.warmupStartDate ?? config.warmupStartDate
+  const [updated] = await db.select().from(inboxes).where(eq(inboxes.id, id))
+  const warmupMaxLimit = getDailyLimit(finalDate)
+  const target = updated?.dailySendTarget ?? null
+  const effectiveDailyLimit = getEffectiveDailyLimit(finalDate, target)
+
   return NextResponse.json({
     ok: true,
     warmupStartDate: finalDate,
     warmupDay: getWarmupDay(finalDate),
-    dailyLimit: getDailyLimit(finalDate),
+    warmupMaxLimit,
+    dailySendTarget: target,
+    effectiveDailyLimit,
+    dailyLimit: effectiveDailyLimit,
   })
 }
 

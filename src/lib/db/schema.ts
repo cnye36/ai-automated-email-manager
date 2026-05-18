@@ -24,6 +24,8 @@ export const inboxes = pgTable('inboxes', {
   lastSentDate: text('last_sent_date'),
   totalSent: integer('total_sent').default(0),
   bounceCount: integer('bounce_count').default(0),
+  /** Manual cap per day; null = use full warmup tier limit. Never exceeds warmup max. */
+  dailySendTarget: integer('daily_send_target'),
   active: boolean('active').default(true),
   createdAt: integer('created_at').default(sql`(extract(epoch from now()))::int`),
 })

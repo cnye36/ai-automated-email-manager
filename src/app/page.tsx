@@ -3,6 +3,7 @@ import { contacts, sentEmails, inboxes } from '@/lib/db/schema'
 import { and, count, eq, gte, isNotNull } from 'drizzle-orm'
 import { getInboxConfigs } from '@/lib/config'
 import { getDailyLimit, getWarmupDay } from '@/lib/warmup'
+import { getEffectiveDailyLimit } from '@/lib/inbox-send-limit'
 import { getSendWindowSummary } from '@/lib/scheduler'
 import { startOfTodayInSendTimezone } from '@/lib/send-timezone'
 import DashboardAutomationBanner from '@/components/DashboardAutomationBanner'
@@ -53,7 +54,15 @@ async function getInboxSummary() {
       active: row?.active ?? c.active,
       warmupStartDate: row?.warmupStartDate ?? c.warmupStartDate,
       warmupDay: getWarmupDay(row?.warmupStartDate ?? c.warmupStartDate),
-      dailyLimit: getDailyLimit(row?.warmupStartDate ?? c.warmupStartDate),
+      warmupMaxLimit: getDailyLimit(row?.warmupStartDate ?? c.warmupStartDate),
+      effectiveDailyLimit: getEffectiveDailyLimit(
+        row?.warmupStartDate ?? c.warmupStartDate,
+        row?.dailySendTarget,
+      ),
+      dailyLimit: getEffectiveDailyLimit(
+        row?.warmupStartDate ?? c.warmupStartDate,
+        row?.dailySendTarget,
+      ),
       sentToday: row?.sentToday ?? 0,
       totalSent,
       bounces: bounces.count,
@@ -131,7 +140,10 @@ export default async function Dashboard() {
                 <tr key={inbox.id} className="hover:bg-gray-800/50">
                   <td className="px-5 py-3 font-mono text-xs text-indigo-300">{inbox.address}</td>
                   <td className="px-5 py-3 text-gray-300">Day {inbox.warmupDay}</td>
-                  <td className="px-5 py-3 text-gray-300">{inbox.dailyLimit}/day</td>
+                  <td className="px-5 py-3 text-gray-300">
+                    {inbox.effectiveDailyLimit}/day
+                    <span className="text-gray-600 text-xs ml-1">(max {inbox.warmupMaxLimit})</span>
+                  </td>
                   <td className="px-5 py-3 text-gray-300">{inbox.sentToday}</td>
                   <td className="px-5 py-3 text-gray-300">{inbox.totalSent}</td>
                   <td className="px-5 py-3">

@@ -3,7 +3,8 @@ import { campaigns, contacts, sentEmails, inboxes, campaignInboxes } from './db/
 import { eq, lte, and, sql, inArray } from 'drizzle-orm'
 import { sendEmail, randomDelay } from './mailer'
 import { ensureEmailBodyHtmlForSend } from './email-body'
-import { getDailyLimit } from './warmup'
+import { getEffectiveDailyLimit } from './inbox-send-limit'
+import { prioritizeDueContacts } from './send-queue-priority'
 import { getInboxConfigs } from './config'
 import type { InboxConfig } from './config'
 import { v4 as uuidv4 } from 'uuid'
@@ -267,7 +268,7 @@ export async function buildAndRunSendQueue(
   for (const config of configs) {
     const [row] = await db.select().from(inboxes).where(eq(inboxes.id, config.id))
     const warmupStart = row?.warmupStartDate ?? config.warmupStartDate
-    const limit = getDailyLimit(warmupStart)
+    const limit = getEffectiveDailyLimit(warmupStart, row?.dailySendTarget)
     const sentSoFar = row?.sentToday ?? 0
     const remaining = options?.ignoreDailyLimit
       ? 9999
@@ -341,11 +342,10 @@ export async function buildAndRunSendQueue(
     byInbox.get(id)!.push(contact)
   }
 
-  // Per-inbox capped lists, then merge in round-robin order (A1, B1, C1, A2, …)
-  // so one inbox does not exhaust its budget in a tight burst before others send.
+  // Per-inbox capped lists (follow-ups first, then new leads), then round-robin across inboxes.
   const perInboxQueues = new Map<string, typeof due>()
   for (const inboxId of inboxIds) {
-    const contactList = byInbox.get(inboxId) ?? []
+    const contactList = prioritizeDueContacts(byInbox.get(inboxId) ?? [])
     const budget = budgets.get(inboxId) || 0
     const slice = contactList.slice(0, budget)
     if (slice.length > 0) {

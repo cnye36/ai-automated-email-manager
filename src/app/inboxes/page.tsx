@@ -7,6 +7,9 @@ interface InboxStatus {
   active: boolean
   warmupStartDate: string
   warmupDay: number
+  warmupMaxLimit: number
+  dailySendTarget: number | null
+  effectiveDailyLimit: number
   dailyLimit: number
   sentToday: number
   totalSent: number
@@ -110,7 +113,7 @@ export default function InboxesPage() {
     }
   }
 
-  const totalBudget = inboxes.filter((i) => i.active).reduce((s, i) => s + i.dailyLimit, 0)
+  const totalBudget = inboxes.filter((i) => i.active).reduce((s, i) => s + i.effectiveDailyLimit, 0)
 
   return (
     <div className="p-8 max-w-4xl">
@@ -118,7 +121,8 @@ export default function InboxesPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Inboxes</h1>
           <p className="text-gray-400 text-sm mt-1">
-            {inboxes.filter((i) => i.active).length} active · {totalBudget} emails/day total budget
+            {inboxes.filter((i) => i.active).length} active · {totalBudget} emails/day target ·{' '}
+            <a href="/settings" className="text-indigo-400 hover:text-indigo-300">Send targets</a>
           </p>
           <p className="text-gray-500 text-xs mt-1">
             Warmup days count Mon–Fri only (send timezone). Weekends do not advance the ramp.
@@ -165,7 +169,13 @@ export default function InboxesPage() {
                   </div>
                   <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
                     <span>Warmup Day <strong className="text-gray-300">{inbox.warmupDay}</strong></span>
-                    <span>Limit <strong className="text-gray-300">{inbox.dailyLimit}/day</strong></span>
+                    <span>
+                      Sending <strong className="text-emerald-400">{inbox.effectiveDailyLimit}/day</strong>
+                      {inbox.dailySendTarget != null ? (
+                        <span className="text-gray-600"> (target {inbox.dailySendTarget})</span>
+                      ) : null}
+                    </span>
+                    <span>Max <strong className="text-gray-300">{inbox.warmupMaxLimit}/day</strong></span>
                     <span>Sent Today <strong className="text-gray-300">{inbox.sentToday}</strong></span>
                     <span>Total <strong className="text-gray-300">{inbox.totalSent.toLocaleString()}</strong></span>
                   </div>
