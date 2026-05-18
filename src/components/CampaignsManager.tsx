@@ -318,6 +318,7 @@ export default function CampaignsManager({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-xs text-gray-500 uppercase border-b border-gray-800">
+              <th className="text-left px-5 py-3 w-16">ID</th>
               <th className="text-left px-5 py-3">Campaign</th>
               <th className="text-left px-5 py-3">Contacts</th>
               <th className="text-left px-5 py-3">Sent</th>
@@ -331,11 +332,12 @@ export default function CampaignsManager({
           </thead>
           <tbody className="divide-y divide-gray-800">
             {loading ? (
-              <tr><td className="px-5 py-4 text-gray-500" colSpan={10}>Loading...</td></tr>
+              <tr><td className="px-5 py-4 text-gray-500" colSpan={11}>Loading...</td></tr>
             ) : campaigns.length === 0 ? (
-              <tr><td className="px-5 py-4 text-gray-500" colSpan={10}>No campaigns imported yet.</td></tr>
+              <tr><td className="px-5 py-4 text-gray-500" colSpan={11}>No campaigns imported yet.</td></tr>
             ) : campaigns.map((campaign) => (
               <tr key={campaign.id} className="hover:bg-gray-800/40">
+                <td className="px-5 py-3 font-mono text-xs text-indigo-400/80 tabular-nums">{campaign.id}</td>
                 <td className="px-5 py-3">
                   <div className="text-gray-100 font-medium">{campaign.name}</div>
                   <div className="text-gray-500 font-mono text-xs mt-0.5">{campaign.fileName || ''}</div>

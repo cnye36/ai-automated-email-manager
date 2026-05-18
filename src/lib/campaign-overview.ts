@@ -4,6 +4,7 @@ import { count, eq } from 'drizzle-orm'
 import { countByStatus, getRemainingContactCount, isCampaignLive } from './campaign-status'
 import { getSendWindowSummary, isAllowedSendTime } from './scheduler'
 import { getSendLockStatus } from './send-lock'
+import { isDevSendOverrideAllowed } from './send-options'
 
 export async function getCampaignAutomationOverview() {
   const rows = await db.select().from(campaigns).orderBy(campaigns.name)
@@ -43,5 +44,7 @@ export async function getCampaignAutomationOverview() {
     liveCampaigns: live,
     hasLiveCampaigns: live.length > 0,
     totalRemaining: live.reduce((sum, c) => sum + c.remaining, 0),
+    devSendAllowed: isDevSendOverrideAllowed(),
+    devSendCampaignId: process.env.DEV_SEND_CAMPAIGN_ID?.trim() || null,
   }
 }

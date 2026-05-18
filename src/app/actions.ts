@@ -23,10 +23,11 @@ export async function checkRepliesAction() {
   try {
     const results = await checkAllReplies()
     const totalReplies = results.reduce((sum, row) => sum + row.replies, 0)
+    const totalNewReplies = results.reduce((sum, row) => sum + row.newReplies, 0)
     revalidatePath('/')
     revalidatePath('/contacts')
     revalidatePath('/replies')
-    return { ok: true as const, results, totalReplies }
+    return { ok: true as const, results, totalReplies, totalNewReplies }
   } catch (err) {
     console.error('Reply action error:', err)
     return { ok: false as const, error: err instanceof Error ? err.message : String(err) }

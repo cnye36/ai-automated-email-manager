@@ -15,6 +15,7 @@ import {
   todayInSendTimezone,
   zonedLocalToUtc,
 } from './send-timezone'
+import type { SendQueueOptions } from './send-options'
 
 /** Business days between sequence steps (Mon–Fri only; weekends are skipped). */
 const SEQUENCE_DELAY_BUSINESS_DAYS = 3
@@ -33,6 +34,8 @@ export interface SendRunResult {
   truncated?: boolean
   queuedThisRun?: number
   maxSendsPerRun?: number
+  devMode?: boolean
+  campaignIds?: number[]
   details: Array<{ contactId: number; inboxId: string; step: number; success: boolean; error?: string }>
 }
 
@@ -183,12 +186,29 @@ async function getActiveInboxRuntimeConfigs(): Promise<InboxConfig[]> {
   return configs.filter((config) => rowMap.get(config.id)?.active ?? config.active)
 }
 
-async function getActiveCampaignIds(): Promise<number[]> {
+async function getActiveCampaignIds(onlyIds?: number[]): Promise<number[]> {
   const rows = await db
     .select({ id: campaigns.id })
     .from(campaigns)
     .where(eq(campaigns.active, true))
-  return rows.map((row) => row.id)
+  let ids = rows.map((row) => row.id)
+  if (onlyIds?.length) {
+    const allowed = new Set(onlyIds)
+    ids = ids.filter((id) => allowed.has(id))
+  }
+  return ids
+}
+
+/** Make test-campaign contacts sendable immediately (dev only). */
+async function forceCampaignContactsDue(campaignIds: number[], now: number) {
+  if (campaignIds.length === 0) return
+  await db
+    .update(contacts)
+    .set({ nextSendDate: now, updatedAt: now })
+    .where(and(
+      inArray(contacts.campaignId, campaignIds),
+      inArray(contacts.status, ['pending', 'active']),
+    ))
 }
 
 /** Returns the inbox IDs assigned to a campaign, or null if no specific assignment (use all). */
@@ -200,24 +220,47 @@ async function getCampaignAssignedInboxIds(campaignId: number): Promise<string[]
   return rows.length > 0 ? rows.map((r) => r.inboxId) : null
 }
 
-export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResult> {
+export async function buildAndRunSendQueue(
+  dryRun = false,
+  options?: SendQueueOptions,
+): Promise<SendRunResult> {
   await syncInboxesFromConfig()
   await resetDailyCountsIfNeeded()
 
   const configs = await getActiveInboxRuntimeConfigs()
-  const result: SendRunResult = { sent: 0, failed: 0, skipped: 0, details: [] }
+  const devMode = Boolean(
+    options?.ignoreSendWindow || options?.ignoreDailyLimit || options?.campaignIds?.length,
+  )
+  const result: SendRunResult = {
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    details: [],
+    devMode: devMode || undefined,
+    campaignIds: options?.campaignIds,
+  }
   const nowDate = new Date()
   const now = Math.floor(nowDate.getTime() / 1000)
   const today = todayInSendTimezone()
   const tzLabel = getSendTimezoneLabel()
+  const maxSendsThisRun = options?.maxSendsPerRun ?? MAX_SENDS_PER_RUN
 
-  if (!isAllowedSendTime(nowDate)) {
+  if (!options?.ignoreSendWindow && !isAllowedSendTime(nowDate)) {
     result.blockedReason = `Outside send window (${SEND_WINDOW_START_HOUR}:00-${SEND_WINDOW_END_HOUR}:00 ${tzLabel}${SEND_WEEKDAYS_ONLY ? ', Monday-Friday' : ''})`
     return result
   }
 
-  const activeCampaignIds = await getActiveCampaignIds()
-  await resyncActiveContactSchedules(activeCampaignIds, nowDate)
+  const activeCampaignIds = await getActiveCampaignIds(options?.campaignIds)
+  if (options?.campaignIds?.length && activeCampaignIds.length === 0) {
+    result.blockedReason = `No active campaigns match dev filter: ${options.campaignIds.join(', ')}`
+    return result
+  }
+
+  if (options?.forceDueNow && activeCampaignIds.length > 0) {
+    await forceCampaignContactsDue(activeCampaignIds, now)
+  } else {
+    await resyncActiveContactSchedules(activeCampaignIds, nowDate)
+  }
 
   // Build per-inbox budget
   const budgets = new Map<string, number>()
@@ -225,7 +268,9 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     const [row] = await db.select().from(inboxes).where(eq(inboxes.id, config.id))
     const limit = getDailyLimit(config.warmupStartDate)
     const sentSoFar = row?.sentToday ?? 0
-    const remaining = Math.max(0, limit - sentSoFar)
+    const remaining = options?.ignoreDailyLimit
+      ? 9999
+      : Math.max(0, limit - sentSoFar)
     if (remaining > 0) budgets.set(config.id, remaining)
   }
 
@@ -265,9 +310,10 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
     if (queue.length === 0) continue
     const inboxId = queue[0]
     queue.push(queue.shift()!)
+    const activateAt = options?.ignoreSendWindow ? now : nextAllowedSendAt(nowDate)
     await db
       .update(contacts)
-      .set({ status: 'active', assignedInboxId: inboxId, nextSendDate: nextAllowedSendAt(nowDate), updatedAt: now })
+      .set({ status: 'active', assignedInboxId: inboxId, nextSendDate: activateAt, updatedAt: now })
       .where(eq(contacts.id, contact.id))
   }
 
@@ -319,9 +365,9 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
   }
 
   // 3. Send (interleaved across inboxes; delay between each step in the merged queue)
-  const batch = sendQueue.slice(0, MAX_SENDS_PER_RUN)
+  const batch = sendQueue.slice(0, maxSendsThisRun)
   result.queuedThisRun = sendQueue.length
-  result.maxSendsPerRun = MAX_SENDS_PER_RUN
+  result.maxSendsPerRun = maxSendsThisRun
   result.truncated = sendQueue.length > batch.length
 
   for (let i = 0; i < batch.length; i++) {
@@ -412,7 +458,7 @@ export async function buildAndRunSendQueue(dryRun = false): Promise<SendRunResul
       }
     }
 
-    if (!dryRun && i < batch.length - 1) {
+    if (!dryRun && !options?.skipDelays && i < batch.length - 1) {
       await randomDelay()
     }
   }

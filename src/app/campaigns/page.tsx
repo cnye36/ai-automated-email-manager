@@ -1,8 +1,8 @@
 import { readdir } from 'fs/promises'
 import path from 'path'
 import { db } from '@/lib/db/client'
-import { campaigns, contacts, sentEmails } from '@/lib/db/schema'
-import { and, count, desc, eq, sql } from 'drizzle-orm'
+import { campaignInboxes, campaigns, contacts, sentEmails } from '@/lib/db/schema'
+import { and, count, desc, eq, isNotNull, sql } from 'drizzle-orm'
 import CampaignsManager, { type CampaignRow } from '@/components/CampaignsManager'
 import { formatCampaignPreviewBodies } from '@/lib/email-body'
 import { getRemainingContactCount, getSendingLabel, isCampaignLive } from '@/lib/campaign-status'
@@ -17,9 +17,12 @@ async function getCampaigns(): Promise<CampaignRow[]> {
 
   return Promise.all(
     rows.map(async (campaign) => {
-      const [[contactCount], [sentCount], statusRows, [coverage], [previewContact]] = await Promise.all([
+      const [[contactCount], [sentCount], [openCount], [replyCount], [bounceCount], statusRows, [coverage], [previewContact], assignedInboxRows] = await Promise.all([
         db.select({ count: count() }).from(contacts).where(eq(contacts.campaignId, campaign.id)),
         db.select({ count: count() }).from(sentEmails).where(eq(sentEmails.campaignId, campaign.id)),
+        db.select({ count: count() }).from(sentEmails).where(and(eq(sentEmails.campaignId, campaign.id), isNotNull(sentEmails.openedAt))),
+        db.select({ count: count() }).from(sentEmails).where(and(eq(sentEmails.campaignId, campaign.id), isNotNull(sentEmails.repliedAt))),
+        db.select({ count: count() }).from(sentEmails).where(and(eq(sentEmails.campaignId, campaign.id), isNotNull(sentEmails.bouncedAt))),
         db
           .select({ status: contacts.status, count: count() })
           .from(contacts)
@@ -63,12 +66,21 @@ async function getCampaigns(): Promise<CampaignRow[]> {
             sql`coalesce(${contacts.email3Body}, '') != ''`
           ))
           .limit(1),
+        db.select({ inboxId: campaignInboxes.inboxId }).from(campaignInboxes).where(eq(campaignInboxes.campaignId, campaign.id)),
       ])
 
+      const totalSent = sentCount.count
       return {
         ...campaign,
         totalContacts: contactCount.count,
-        sentEmails: sentCount.count,
+        sentEmails: totalSent,
+        openCount: openCount.count,
+        replyCount: replyCount.count,
+        bounceCount: bounceCount.count,
+        openRate: totalSent > 0 ? ((openCount.count / totalSent) * 100).toFixed(1) : '0.0',
+        replyRate: totalSent > 0 ? ((replyCount.count / totalSent) * 100).toFixed(1) : '0.0',
+        bounceRate: totalSent > 0 ? ((bounceCount.count / totalSent) * 100).toFixed(1) : '0.0',
+        assignedInboxIds: assignedInboxRows.map((r) => r.inboxId),
         emailCoverage: [
           { step: 1, complete: Number(coverage?.email1Complete ?? 0), subjectOnly: Number(coverage?.email1SubjectOnly ?? 0), bodyOnly: Number(coverage?.email1BodyOnly ?? 0) },
           { step: 2, complete: Number(coverage?.email2Complete ?? 0), subjectOnly: Number(coverage?.email2SubjectOnly ?? 0), bodyOnly: Number(coverage?.email2BodyOnly ?? 0) },

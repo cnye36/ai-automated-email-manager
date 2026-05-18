@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { buildAndRunSendQueue } from '@/lib/scheduler'
+import { parseSendQueueOptionsFromBody } from '@/lib/send-options'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,8 +13,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}))
     const dryRun = body.dryRun === true
+    let devOptions
+    try {
+      devOptions = parseSendQueueOptionsFromBody(body as Record<string, unknown>) ?? undefined
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 403 })
+    }
 
-    const result = await buildAndRunSendQueue(dryRun)
+    const result = await buildAndRunSendQueue(dryRun, devOptions)
     return NextResponse.json(result)
   } catch (err) {
     console.error('Send error:', err)
