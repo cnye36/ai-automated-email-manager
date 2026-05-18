@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db/client'
 import { campaigns, contacts } from '@/lib/db/schema'
-import { and, eq, count, sql } from 'drizzle-orm'
+import { and, asc, eq, count, sql } from 'drizzle-orm'
+import { contactSearchRankOrder, contactSearchWhereClause } from '@/lib/contact-search'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,6 +15,8 @@ const ALLOWED_STATUSES = new Set([
   'do_not_contact',
   'bounced',
   'unsubscribed',
+  'no_longer_at_company',
+  'unreachable',
   'complete',
   'error',
 ])
@@ -22,6 +25,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const status = searchParams.get('status')
   const campaignIdParam = searchParams.get('campaignId')
+  const searchQuery = searchParams.get('q')?.trim() || ''
   const page = parseInt(searchParams.get('page') || '1')
   const limit = parseInt(searchParams.get('limit') || '50')
   const offset = (page - 1) * limit
@@ -35,8 +39,12 @@ export async function GET(req: NextRequest) {
     }
     conditions.push(eq(contacts.campaignId, campaignId))
   }
+  if (searchQuery) conditions.push(contactSearchWhereClause(searchQuery))
 
   const whereClause = conditions.length > 0 ? and(...conditions) : sql`1=1`
+  const orderBy = searchQuery
+    ? [asc(contactSearchRankOrder(searchQuery)), asc(contacts.lastName), asc(contacts.firstName)]
+    : [asc(contacts.lastName), asc(contacts.firstName)]
 
   const [rows, [total]] = await Promise.all([
     db
@@ -61,6 +69,7 @@ export async function GET(req: NextRequest) {
       .from(contacts)
       .leftJoin(campaigns, eq(contacts.campaignId, campaigns.id))
       .where(whereClause)
+      .orderBy(...orderBy)
       .limit(limit)
       .offset(offset),
     db

@@ -1,6 +1,6 @@
 import { db } from './db/client'
 import { campaigns, contacts, sentEmails, inboxes, campaignInboxes } from './db/schema'
-import { eq, lte, and, sql, inArray } from 'drizzle-orm'
+import { eq, lte, and, sql, inArray, isNull, or } from 'drizzle-orm'
 import { sendEmail, randomDelay } from './mailer'
 import { ensureEmailBodyHtmlForSend } from './email-body'
 import { getEffectiveDailyLimit } from './inbox-send-limit'
@@ -112,14 +112,26 @@ async function resyncActiveContactSchedules(activeCampaignIds: number[], nowDate
   const now = Math.floor(nowDate.getTime() / 1000)
   const nextSlot = nextAllowedSendAt(nowDate)
 
-  // Overdue: due now or earlier → snap to the next allowed send window
+  // Overdue or missing schedule → snap to the next allowed send window
   await db
     .update(contacts)
     .set({ nextSendDate: nextSlot, updatedAt: now })
     .where(and(
       eq(contacts.status, 'active'),
       inArray(contacts.campaignId, activeCampaignIds),
-      lte(contacts.nextSendDate, now),
+      or(isNull(contacts.nextSendDate), lte(contacts.nextSendDate, now)),
+    ))
+
+  // Legacy imports: active step-0 contacts scheduled in the future but never sent
+  await db
+    .update(contacts)
+    .set({ nextSendDate: nextSlot, updatedAt: now })
+    .where(and(
+      eq(contacts.status, 'active'),
+      inArray(contacts.campaignId, activeCampaignIds),
+      eq(contacts.sequenceStep, 0),
+      sql`${contacts.nextSendDate} > ${now}`,
+      sql`NOT EXISTS (SELECT 1 FROM ${sentEmails} WHERE ${sentEmails.contactId} = ${contacts.id})`,
     ))
 
   // Stuck in the future: last send was long enough ago (business days) but nextSendDate not reached
