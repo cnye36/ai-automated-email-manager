@@ -48,7 +48,7 @@ export function isAllowedSendTime(date: Date): boolean {
   return hour >= SEND_WINDOW_START_HOUR && hour < SEND_WINDOW_END_HOUR
 }
 
-function nextAllowedSendAt(date: Date): number {
+export function nextAllowedSendAt(date: Date): number {
   if (isAllowedSendTime(date)) {
     return Math.floor(date.getTime() / 1000)
   }

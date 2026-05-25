@@ -21,13 +21,7 @@ interface ReplyRow {
   contactStatus: string | null
 }
 
-const DISPOSITIONS = [
-  { value: 'replied', label: 'Needs Review' },
-  { value: 'interested', label: 'Interested' },
-  { value: 'not_interested', label: 'Not Interested' },
-  { value: 'do_not_contact', label: 'Do Not Contact' },
-  { value: 'unsubscribed', label: 'Unsubscribed' },
-]
+import { REPLY_DISPOSITIONS, replyDispositionSelectValue } from '@/lib/reply-disposition'
 
 export default function RepliesManager({ initialReplies, initialTotal }: {
   initialReplies: ReplyRow[]
@@ -139,12 +133,12 @@ export default function RepliesManager({ initialReplies, initialTotal }: {
                 </td>
                 <td className="px-4 py-3">
                   <select
-                    value={reply.contactStatus || reply.disposition || 'replied'}
+                    value={replyDispositionSelectValue(reply.disposition, reply.contactStatus)}
                     onChange={(event) => updateDisposition(reply, event.target.value)}
                     disabled={updating === reply.id}
-                    className="w-40 rounded-md bg-gray-950 border border-gray-700 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-indigo-500 disabled:opacity-50"
+                    className="w-44 rounded-md bg-gray-950 border border-gray-700 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-indigo-500 disabled:opacity-50"
                   >
-                    {DISPOSITIONS.map((option) => (
+                    {REPLY_DISPOSITIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>

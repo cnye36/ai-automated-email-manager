@@ -3,16 +3,10 @@ import { db } from '@/lib/db/client'
 import { contacts, replyEvents } from '@/lib/db/schema'
 import { desc, eq, sql } from 'drizzle-orm'
 import { getInboxConfigs } from '@/lib/config'
+import { isValidReplyDisposition } from '@/lib/reply-disposition'
+import { resumeContactAfterAutomaticReply } from '@/lib/reply-disposition-server'
 
 export const dynamic = 'force-dynamic'
-
-const CONTACT_STATUSES = new Set([
-  'replied',
-  'interested',
-  'not_interested',
-  'do_not_contact',
-  'unsubscribed',
-])
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -69,7 +63,7 @@ export async function PATCH(req: NextRequest) {
     if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json({ error: 'Invalid reply id' }, { status: 400 })
     }
-    if (!disposition || !CONTACT_STATUSES.has(disposition)) {
+    if (!disposition || !isValidReplyDisposition(disposition)) {
       return NextResponse.json({ error: 'Invalid disposition' }, { status: 400 })
     }
 
@@ -82,15 +76,26 @@ export async function PATCH(req: NextRequest) {
       .where(eq(replyEvents.id, id))
 
     if (reply.contactId) {
-      await db
-        .update(contacts)
-        .set({
-          status: disposition,
-          notes,
-          nextSendDate: null,
-          updatedAt: Math.floor(Date.now() / 1000),
-        })
-        .where(eq(contacts.id, reply.contactId))
+      const now = Math.floor(Date.now() / 1000)
+      if (disposition === 'automatic_reply') {
+        await resumeContactAfterAutomaticReply(reply.contactId)
+        if (notes !== undefined) {
+          await db
+            .update(contacts)
+            .set({ notes, updatedAt: now })
+            .where(eq(contacts.id, reply.contactId))
+        }
+      } else {
+        await db
+          .update(contacts)
+          .set({
+            status: disposition,
+            notes,
+            nextSendDate: null,
+            updatedAt: now,
+          })
+          .where(eq(contacts.id, reply.contactId))
+      }
     }
 
     return NextResponse.json({ ok: true })
