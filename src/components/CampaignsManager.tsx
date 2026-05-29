@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import CampaignSendControls from '@/components/CampaignSendControls'
 
 export interface CampaignRow {
@@ -39,15 +39,21 @@ interface ImportResult {
   errors: string[]
 }
 
+interface SyncResult {
+  updated: number
+  inserted: number
+  unchanged: number
+  skippedProtected: number
+  skippedDuplicateInFile: number
+  skippedGlobalDuplicate: number
+  notInFile: number
+  errors: string[]
+}
+
 interface InboxOption {
   id: string
   address: string
   active: boolean
-}
-
-function statusText(rows: CampaignRow['statusBreakdown']) {
-  if (rows.length === 0) return 'No contacts'
-  return rows.map((row) => `${row.status || 'pending'} ${row.count}`).join(' · ')
 }
 
 export default function CampaignsManager({
@@ -69,6 +75,8 @@ export default function CampaignsManager({
   const [assigningCampaignId, setAssigningCampaignId] = useState<number | null>(null)
   const [savingInboxes, setSavingInboxes] = useState(false)
   const [selectedInboxIds, setSelectedInboxIds] = useState<string[]>([])
+  const [syncingCampaignId, setSyncingCampaignId] = useState<number | null>(null)
+  const syncFileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetch('/api/inboxes')
@@ -147,6 +155,55 @@ export default function CampaignsManager({
     setSelectedInboxIds((prev) =>
       prev.includes(inboxId) ? prev.filter((id) => id !== inboxId) : [...prev, inboxId]
     )
+  }
+
+  function startSync(campaignId: number) {
+    setSyncingCampaignId(campaignId)
+    syncFileInputRef.current?.click()
+  }
+
+  async function handleSyncFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    const campaignId = syncingCampaignId
+    event.target.value = ''
+    if (!file || campaignId === null) {
+      setSyncingCampaignId(null)
+      return
+    }
+    setSyncingCampaignId(null)
+
+    setUploading(true)
+    setMessage(null)
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/sync`, {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setMessage(`Sync failed: ${data.error || res.statusText}`)
+      } else {
+        const result = data as SyncResult
+        const parts = [
+          `Sync complete: ${result.updated} updated`,
+          result.inserted > 0 ? `${result.inserted} added` : null,
+          result.unchanged > 0 ? `${result.unchanged} unchanged` : null,
+          result.skippedProtected > 0 ? `${result.skippedProtected} protected (finished/replied)` : null,
+          result.skippedGlobalDuplicate > 0 ? `${result.skippedGlobalDuplicate} blocked (other campaign)` : null,
+          result.notInFile > 0 ? `${result.notInFile} in DB but not in file` : null,
+        ].filter(Boolean)
+        setMessage(parts.join(' · '))
+        if (result.errors?.length > 0) {
+          console.warn('Sync row warnings:', result.errors)
+        }
+        await load()
+      }
+    } finally {
+      setUploading(false)
+    }
   }
 
   async function importLocalFile(fileName: string) {
@@ -233,21 +290,14 @@ export default function CampaignsManager({
     }
   }
 
-  function coverageLabel(campaign: CampaignRow) {
-    const total = campaign.totalContacts || 0
-    if (total === 0) return 'No contacts'
-
-    return campaign.emailCoverage
-      .map((row) => `E${row.step} ${row.complete}/${total}`)
-      .join(' · ')
-  }
-
   return (
     <div className="p-8 max-w-6xl">
       <div className="flex items-start justify-between gap-6 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Campaigns</h1>
-          <p className="text-gray-400 text-sm mt-1">Upload CSV or XLSX files with pre-written sequence emails.</p>
+          <p className="text-gray-400 text-sm mt-1">
+            Import new campaigns, or export / sync an existing campaign to edit leads and email copy in a spreadsheet.
+          </p>
         </div>
         <button
           onClick={deleteEverything}
@@ -259,6 +309,14 @@ export default function CampaignsManager({
       </div>
 
       <CampaignSendControls />
+
+      <input
+        ref={syncFileInputRef}
+        type="file"
+        accept=".csv,.xlsx,.xlsm"
+        className="hidden"
+        onChange={handleSyncFile}
+      />
 
       <form id="new-campaign" onSubmit={uploadCampaign} className="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6 scroll-mt-8">
         <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
@@ -386,6 +444,20 @@ export default function CampaignsManager({
                   )}
                 </td>
                 <td className="px-5 py-3 text-right space-x-2 whitespace-nowrap">
+                  <a
+                    href={`/api/campaigns/${campaign.id}/export`}
+                    className="inline-block rounded-md bg-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-600"
+                  >
+                    Export
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => startSync(campaign.id)}
+                    disabled={uploading || syncingCampaignId === campaign.id}
+                    className="rounded-md bg-indigo-950 border border-indigo-800 px-3 py-1.5 text-sm text-indigo-200 hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {uploading && syncingCampaignId === campaign.id ? 'Syncing...' : 'Sync'}
+                  </button>
                   <button
                     onClick={() => setPreview(campaign)}
                     disabled={!campaign.previewContact}

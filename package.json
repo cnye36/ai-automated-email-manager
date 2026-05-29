@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "daily": "tsx --env-file=.env.local src/scripts/daily-run.ts",
+    "export-campaign": "tsx --env-file=.env.local src/scripts/export-campaign.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },
