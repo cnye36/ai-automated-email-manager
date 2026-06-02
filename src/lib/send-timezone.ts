@@ -98,7 +98,9 @@ export function zonedLocalToUtc(
     let diffMs = 0
 
     if (actualDayKey !== targetDayKey) {
-      diffMs = (targetDayKey - actualDayKey) * 86_400_000
+      const actualMs = Date.UTC(z.year, z.month - 1, z.day)
+      const targetMs = Date.UTC(year, month - 1, day)
+      diffMs = targetMs - actualMs
     } else {
       const targetMinutes = hour * 60 + minute
       const actualMinutes = z.hour * 60 + z.minute
