@@ -12,6 +12,8 @@ export interface ImportResult {
   duplicates: number
   errors: string[]
   headers: string[]
+  /** Set when all rows were skipped as duplicates — use Sync on an existing campaign instead. */
+  suggestSyncCampaignId?: number
 }
 
 export async function importFile(
@@ -116,6 +118,40 @@ export async function importFile(
     .set({ totalContacts: countRow?.count ?? imported })
     .where(eq(campaigns.id, campaign.id))
 
+  let suggestSyncCampaignId: number | undefined
+  if (imported === 0 && dbDeduped > 0 && uniqueRows.length > 0) {
+    const emailToCampaign = new Map<string, number>()
+    const dupEmails = uniqueRows.map((r) => r.primaryEmail.toLowerCase().trim())
+    for (let i = 0; i < dupEmails.length; i += 500) {
+      const batch = dupEmails.slice(i, i + 500)
+      const rows = await db
+        .select({ primaryEmail: contacts.primaryEmail, campaignId: contacts.campaignId })
+        .from(contacts)
+        .where(inArray(sql`lower(trim(${contacts.primaryEmail}))`, batch))
+      for (const row of rows) {
+        if (row.campaignId != null) {
+          emailToCampaign.set(row.primaryEmail.toLowerCase().trim(), row.campaignId)
+        }
+      }
+    }
+    const counts = new Map<number, number>()
+    for (const email of dupEmails) {
+      const cid = emailToCampaign.get(email)
+      if (cid != null) counts.set(cid, (counts.get(cid) ?? 0) + 1)
+    }
+    let bestId: number | undefined
+    let bestCount = 0
+    for (const [cid, n] of counts) {
+      if (n > bestCount) {
+        bestCount = n
+        bestId = cid
+      }
+    }
+    if (bestId != null && bestCount >= Math.floor(dupEmails.length * 0.5)) {
+      suggestSyncCampaignId = bestId
+    }
+  }
+
   return {
     campaignId: campaign.id,
     imported,
@@ -123,6 +159,7 @@ export async function importFile(
     duplicates,
     errors,
     headers,
+    suggestSyncCampaignId,
   }
 }
 

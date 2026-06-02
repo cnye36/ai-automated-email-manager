@@ -46,11 +46,27 @@ function pickFields(
 ): Partial<NewContact> {
   const out: Partial<NewContact> = {}
   for (const field of fields) {
-    if (field in source) {
-      ;(out as Record<string, unknown>)[field] = (source as Record<string, unknown>)[field] ?? null
-    }
+    if (!(field in source)) continue
+    const raw = (source as Record<string, unknown>)[field]
+    if (raw === null || raw === undefined) continue
+    if (typeof raw === 'string' && raw.trim() === '') continue
+    ;(out as Record<string, unknown>)[field] = typeof raw === 'string' ? raw.trim() : raw
   }
   return out
+}
+
+function diffAgainstExisting(
+  existing: Contact,
+  patch: Partial<NewContact>,
+): Partial<NewContact> | null {
+  const changed: Partial<NewContact> = {}
+  for (const [key, value] of Object.entries(patch) as Array<[keyof NewContact, unknown]>) {
+    const current = existing[key]
+    if (String(value ?? '') !== String(current ?? '')) {
+      ;(changed as Record<string, unknown>)[key as string] = value
+    }
+  }
+  return hasFieldUpdates(changed) ? changed : null
 }
 
 function hasFieldUpdates(values: Partial<NewContact>): boolean {
@@ -134,8 +150,8 @@ function buildUpdatePayload(
   const profileFields = getProfileFields()
   const emailFields = terminal ? [] : getUpdatableEmailFields(sentSteps)
   const allowed = [...profileFields, ...emailFields]
-  const patch = pickFields(rowData, allowed)
-  return hasFieldUpdates(patch) ? patch : null
+  const picked = pickFields(rowData, allowed)
+  return diffAgainstExisting(existing, picked)
 }
 
 export async function syncCampaignFromFile(

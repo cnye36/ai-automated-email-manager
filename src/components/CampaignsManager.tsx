@@ -37,6 +37,7 @@ interface ImportResult {
   skipped: number
   duplicates: number
   errors: string[]
+  suggestSyncCampaignId?: number
 }
 
 interface SyncResult {
@@ -77,6 +78,8 @@ export default function CampaignsManager({
   const [selectedInboxIds, setSelectedInboxIds] = useState<string[]>([])
   const [syncingCampaignId, setSyncingCampaignId] = useState<number | null>(null)
   const syncFileInputRef = useRef<HTMLInputElement>(null)
+  const [uploadMode, setUploadMode] = useState<'new' | 'update'>('new')
+  const [updateCampaignId, setUpdateCampaignId] = useState<string>('')
 
   useEffect(() => {
     fetch('/api/inboxes')
@@ -107,8 +110,43 @@ export default function CampaignsManager({
 
     const form = event.currentTarget
     const formData = new FormData(form)
+    const file = formData.get('file')
+    if (!(file instanceof File) || file.size === 0) {
+      setMessage('Choose a lead file to upload.')
+      setUploading(false)
+      return
+    }
 
     try {
+      if (uploadMode === 'update') {
+        const campaignId = Number(updateCampaignId)
+        if (!Number.isInteger(campaignId) || campaignId <= 0) {
+          setMessage('Select which campaign to update.')
+          return
+        }
+        const syncData = new FormData()
+        syncData.append('file', file)
+        const res = await fetch(`/api/campaigns/${campaignId}/sync`, { method: 'POST', body: syncData })
+        const data = await res.json()
+        if (!res.ok || data.error) {
+          setMessage(`Sync failed: ${data.error || res.statusText}`)
+        } else {
+          const result = data as SyncResult
+          const parts = [
+            `Updated ${result.updated} contacts with new spreadsheet data.`,
+            result.inserted > 0 ? `${result.inserted} new contacts added` : null,
+            result.unchanged > 0 ? `${result.unchanged} unchanged` : null,
+            result.skippedProtected > 0
+              ? `${result.skippedProtected} finished/replied (email copy not changed)`
+              : null,
+          ].filter(Boolean)
+          setMessage(`${parts.join(' · ')} Click Resume on that campaign to continue sending.`)
+          form.reset()
+          await load()
+        }
+        return
+      }
+
       const res = await fetch('/api/import', { method: 'POST', body: formData })
       const data = await res.json()
       if (!res.ok || data.error) {
@@ -118,6 +156,20 @@ export default function CampaignsManager({
         const parts = [`Imported ${result.imported} contacts.`]
         if (result.duplicates > 0) parts.push(`${result.duplicates} duplicates skipped.`)
         if (result.skipped > 0) parts.push(`${result.skipped} rows had errors.`)
+        if (result.imported === 0 && result.duplicates > 0) {
+          const match = campaigns.find((c) => c.id === result.suggestSyncCampaignId)
+          if (match) {
+            parts.push(
+              `These leads already belong to "${match.name}" (ID ${match.id}). Switch to "Update existing campaign", select it, and upload again — or use Sync on that row.`,
+            )
+            setUploadMode('update')
+            setUpdateCampaignId(String(match.id))
+          } else {
+            parts.push(
+              'These leads already exist in the app. Use "Update existing campaign" or Sync — not Import — to refresh email copy and continue sequences.',
+            )
+          }
+        }
         setMessage(parts.join(' '))
         form.reset()
         await load()
@@ -319,16 +371,62 @@ export default function CampaignsManager({
       />
 
       <form id="new-campaign" onSubmit={uploadCampaign} className="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6 scroll-mt-8">
-        <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
-          <label className="block">
-            <span className="block text-xs text-gray-500 uppercase tracking-wider mb-2">Campaign name</span>
+        <div className="flex flex-wrap gap-4 mb-4">
+          <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
             <input
-              name="campaignName"
-              required
-              className="w-full rounded-md bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
-              placeholder="May Apollo batch"
+              type="radio"
+              name="uploadMode"
+              checked={uploadMode === 'new'}
+              onChange={() => setUploadMode('new')}
+              className="text-indigo-500"
             />
+            Create new campaign
           </label>
+          <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+            <input
+              type="radio"
+              name="uploadMode"
+              checked={uploadMode === 'update'}
+              onChange={() => setUploadMode('update')}
+              className="text-indigo-500"
+            />
+            Update existing campaign (refresh copy and continue sequences)
+          </label>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          {uploadMode === 'new'
+            ? 'Imports only brand-new leads. Anyone already emailed is skipped.'
+            : 'Matches leads by email, updates unsent email steps with your new copy, and never restarts finished sequences.'}
+        </p>
+        <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+          {uploadMode === 'new' ? (
+            <label className="block">
+              <span className="block text-xs text-gray-500 uppercase tracking-wider mb-2">Campaign name</span>
+              <input
+                name="campaignName"
+                required
+                className="w-full rounded-md bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
+                placeholder="May Apollo batch"
+              />
+            </label>
+          ) : (
+            <label className="block">
+              <span className="block text-xs text-gray-500 uppercase tracking-wider mb-2">Campaign to update</span>
+              <select
+                value={updateCampaignId}
+                onChange={(e) => setUpdateCampaignId(e.target.value)}
+                required
+                className="w-full rounded-md bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
+              >
+                <option value="">Select campaign…</option>
+                {campaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    #{c.id} {c.name} ({c.totalContacts ?? 0} contacts)
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="block">
             <span className="block text-xs text-gray-500 uppercase tracking-wider mb-2">Lead file</span>
             <input
@@ -344,7 +442,13 @@ export default function CampaignsManager({
             disabled={uploading}
             className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            {uploading ? 'Importing...' : 'Import'}
+            {uploading
+              ? uploadMode === 'update'
+                ? 'Syncing...'
+                : 'Importing...'
+              : uploadMode === 'update'
+                ? 'Sync file'
+                : 'Import'}
           </button>
         </div>
         {message && <p className="text-sm text-gray-300 mt-4">{message}</p>}
